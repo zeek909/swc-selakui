@@ -109,6 +109,27 @@
       reader.readAsDataURL(file);
     });
   }
+  // Logos are kept small (160 px, PNG so a transparent background stays transparent).
+  function logoImage(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onerror = function () { reject(new Error('Could not read the picture.')); };
+      reader.onload = function () {
+        var img = new Image();
+        img.onerror = function () { reject(new Error('That file is not a picture.')); };
+        img.onload = function () {
+          var max = 160, r = Math.min(1, max / Math.max(img.width, img.height));
+          var c = document.createElement('canvas'); c.width = Math.round(img.width * r); c.height = Math.round(img.height * r);
+          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+          var url = c.toDataURL('image/png');
+          if (url.length > 44000) url = c.toDataURL('image/jpeg', 0.85);
+          resolve(url);
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
   function showPhotos(ids, title) {
     openDialog('<h2>' + esc(title) + '</h2><div class="gallery" id="gal"><div class="loading">Loading photos…</div></div>' +
       '<div class="actions"><button class="btn" type="button" data-close>Close</button></div>', function (root) {
@@ -123,7 +144,7 @@
 
   function navItems() {
     if (!isCommittee()) return [['home', 'Home'], ['visitor-new', 'Report a visitor'], ['dispute-new', 'Report a dispute'], ['mine', 'My reports'], ['pin', 'Change PIN']];
-    var items = [['home', 'Dashboard'], ['visitors', 'Visitor reports'], ['disputes', 'Disputes'], ['funds', 'Party funds'], ['mine', 'My reports']];
+    var items = [['home', 'Dashboard'], ['visitors', 'Visitor reports'], ['disputes', 'Disputes'], ['funds', 'Party funds'], ['reports', 'Print reports'], ['mine', 'My reports']];
     if (isAdmin()) items.push(['staff', 'Staff and settings']);
     items.push(['pin', 'Change PIN']);
     return items;
@@ -154,23 +175,54 @@
   }
   $('#logoutBtn').onclick = function () { if (S.token) call('logout', S.token); signedOut(); };
 
+  /* Committee name, school name and logo, set by the admin in Settings. */
+  var BRAND = { committeeName: 'Staff Welfare Committee', schoolName: 'TCV School Selakui', logo: '' };
+  function sealHtml(cls) {
+    return BRAND.logo ? '<img class="' + cls + ' logo" alt="" src="' + esc(BRAND.logo) + '">' : '<div class="' + cls + '" aria-hidden="true">SWC</div>';
+  }
+  function applyBrand(b) {
+    if (b) BRAND = b;
+    $('#brandTitle').textContent = BRAND.committeeName;
+    $('#brandSchool').textContent = BRAND.schoolName;
+    var seal = $('#seal');
+    seal.innerHTML = BRAND.logo ? '<img alt="" src="' + esc(BRAND.logo) + '">' : 'SWC';
+    seal.classList.toggle('has-logo', !!BRAND.logo);
+    document.title = BRAND.committeeName;
+  }
+
   function showLogin(msg) {
-    $('#app').innerHTML = '<div class="login-wrap"><form class="card login stack" id="loginForm">' +
+    $('#app').innerHTML = '<div class="login-wrap"><form class="login" id="loginForm" novalidate>' +
+      '<div class="login-head">' + sealHtml('login-seal') +
+      '<div><div class="login-title">' + esc(BRAND.committeeName) + '</div><div class="muted">' + esc(BRAND.schoolName) + '</div></div></div>' +
       '<h1>Sign in</h1><p class="muted" style="margin:0">Use the staff ID and PIN the committee gave you.</p>' +
       (msg ? '<div class="warn">' + esc(msg) + '</div>' : '') +
       '<div class="field"><label for="lid">Staff ID</label><input type="text" id="lid" name="id" autocomplete="username" autocapitalize="none" required></div>' +
       '<div class="field"><label for="lpin">PIN</label><input type="password" id="lpin" name="pin" inputmode="numeric" autocomplete="current-password" required></div>' +
-      '<button class="btn primary big" type="submit">Sign in</button></form></div>';
+      '<div class="pinpad" aria-label="Number pad">' + ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'clear', '0', 'back'].map(function (k) {
+        var label = k === 'clear' ? 'Clear' : k === 'back' ? '⌫' : k;
+        return '<button type="button" data-k="' + k + '"' + (k === 'back' ? ' aria-label="Delete last digit"' : '') + (k === 'clear' ? ' class="fn"' : k === 'back' ? ' class="fn"' : '') + '>' + label + '</button>';
+      }).join('') + '</div>' +
+      '<button class="btn primary login-go" type="submit">Sign in</button></form></div>';
     $('#lid').focus();
+    $$('.pinpad button').forEach(function (b) {
+      b.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      b.onclick = function () {
+        var k = b.dataset.k, el = $('#lpin');
+        if (k === 'clear') el.value = ''; else if (k === 'back') el.value = el.value.slice(0, -1); else if (el.value.length < 8) el.value += k;
+        el.focus();
+      };
+    });
+    $('#lid').onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); $('#lpin').focus(); } };
     $('#loginForm').onsubmit = function (e) {
       e.preventDefault();
+      if (!$('#lid').value.trim() || !$('#lpin').value) return fail(new Error('Type your staff ID and PIN.'));
       var btn = $('button[type=submit]', e.target); busy(btn, true, 'Signing in…');
       call('login', $('#lid').value, $('#lpin').value).then(function (r) {
         S.token = r.token;
         try { sessionStorage.setItem('swc_token', r.token); } catch (err) {}
         if (location.hash && location.hash !== '#home') history.replaceState(null, '', location.pathname + location.search + '#home');
         start();
-      }).catch(function (err) { busy(btn, false); fail(err); });
+      }).catch(function (err) { busy(btn, false); $('#lpin').value = ''; fail(err); });
     };
   }
 
@@ -178,6 +230,7 @@
     $('#app').innerHTML = '<div class="login-wrap"><div class="loading">Loading…</div></div>';
     api('bootstrap').then(function (b) {
       S.boot = b; S.user = b.user;
+      applyBrand(b.branding);
       shell();
       if (S.user.mustChange) { location.hash = '#pin'; route(); toast('Please choose your own PIN first.'); return; }
       route();
@@ -206,38 +259,111 @@
   routes.home = function () {
     if (!isCommittee()) return staffHome();
     loading();
-    api('dashboard').then(function (x) {
+    Promise.all([api('dashboard'), desktopInfo()]).then(function (r) {
+      var x = r[0], desk = r[1];
       var ev = x.nextEvent;
-      var pct = ev && ev.collected > 0 ? Math.min(100, Math.round(ev.spent / ev.collected * 100)) : 0;
-      view('<h1>Dashboard</h1>' +
-        '<div class="actions"><a class="btn primary big" href="#visitor-new">Report a visitor</a>' +
-        '<a class="btn big" href="#dispute-new">Report a dispute</a>' +
-        '<a class="btn big" href="#funds">Add donation or expense</a></div>' +
+      var hour = new Date().getHours();
+      var hello = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+      var v = view('<div class="dash-head"><div><h1>' + hello + ', ' + esc(S.user.name.split(' ')[0]) + '</h1>' +
+        '<div class="muted">' + longDate(today()) + '</div></div>' +
+        '<div class="actions"><a class="btn primary" href="#visitor-new">+ Report a visitor</a>' +
+        '<a class="btn" href="#dispute-new">Report a dispute</a><a class="btn" href="#funds">Donation or expense</a></div></div>' +
+        backupBanner(desk) +
         '<div class="tiles">' +
-        tile('Visitors staying now', x.stayingCount, 'in ' + x.stayingQuarters + (x.stayingQuarters === 1 ? ' quarter' : ' quarters')) +
-        tile('Reports to review', x.toReview, x.toReview ? 'Waiting for committee' : 'All reviewed', x.toReview ? 'var(--warning)' : '') +
-        tile('Open disputes', x.openDisputes, x.nextMeeting ? 'Next meeting ' + d(x.nextMeeting) : 'No meeting set', x.openDisputes ? 'var(--danger)' : '') +
-        tile('Party fund balance', rs(x.balance), 'all events together', x.balance < 0 ? 'var(--danger)' : 'var(--success)') +
+        tileLink('#visitors/staying', 'Visitors staying now', x.stayingCount, x.stayingQuarters ? 'in ' + x.stayingQuarters + (x.stayingQuarters === 1 ? ' quarter' : ' quarters') : 'Nobody staying', 'teal') +
+        tileLink('#visitors/review', 'Reports to review', x.toReview, x.toReview ? 'Waiting for the committee' : 'All reviewed', x.toReview ? 'warning' : 'teal') +
+        tileLink('#disputes', 'Open disputes', x.openDisputes, x.nextMeeting ? 'Next meeting ' + d(x.nextMeeting) : 'No meeting set', x.openDisputes ? 'danger' : 'teal') +
+        tileLink('#funds', 'Party fund balance', rs(x.balance), x.openEvents + (x.openEvents === 1 ? ' open event' : ' open events'), x.balance < 0 ? 'danger' : 'success') +
         '</div>' +
-        '<section class="card"><div class="card-head"><h2>Recent visitor reports</h2><a href="#visitors" class="small" style="font-weight:600">See all</a></div>' +
+        '<div class="dash-grid"><div class="stack">' +
+        (x.overdue.length ? '<section class="card attention"><div class="card-head"><h2>Should have left</h2><span class="badge b-no">' + x.overdue.length + '</span></div>' +
+          '<div class="small muted">Their leaving date has passed. Mark them as left, or change the dates.</div>' +
+          x.overdue.map(function (o) {
+            return '<div class="line"><div><strong class="mono">' + esc(o.quarter) + '</strong> · ' + esc(o.visitorNames) + ' <span class="muted">(' + esc(o.staffName) + ')</span>' +
+              '<div class="small muted">Was leaving ' + d(o.leaving) + ' · ' + daysAgo(o.leaving) + '</div></div>' +
+              '<div class="actions"><button class="btn sm" type="button" data-left="' + esc(o.id) + '">Mark left</button><button class="btn sm ghost" type="button" data-visitor="' + esc(o.id) + '">Open</button></div></div>';
+          }).join('') + '</section>' : '') +
+        '<section class="card"><div class="card-head"><h2>Staying now</h2><a href="#visitors/staying" class="small strong-link">See all</a></div>' +
+        (x.staying.length ? '<div class="table-wrap"><table><thead><tr><th>Quarter</th><th>Staff</th><th>Visitors</th><th>Leaving</th><th>Status</th></tr></thead><tbody>' +
+          x.staying.map(function (o) {
+            return '<tr class="click" tabindex="0" data-visitor="' + esc(o.id) + '"><td class="mono">' + esc(o.quarter) + '</td><td>' + esc(o.staffName) + '</td>' +
+              '<td>' + esc(o.visitorNames) + ' <span class="muted">(' + esc(o.count) + ')</span></td><td class="nw">' + d(o.leaving) + '</td><td>' + badge(o.status) + '</td></tr>';
+          }).join('') + '</tbody></table></div>' : '<div class="empty">Nobody is staying in the quarters today.</div>') + '</section>' +
+        (x.arriving.length ? '<section class="card"><h2>Coming soon</h2>' + x.arriving.map(function (o) {
+          return '<div class="line click" tabindex="0" data-visitor="' + esc(o.id) + '"><div><strong class="mono">' + esc(o.quarter) + '</strong> · ' + esc(o.visitorNames) +
+            ' <span class="muted">(' + esc(o.staffName) + ')</span></div><div class="small muted">Arriving ' + d(o.arrival) + '</div></div>';
+        }).join('') + '</section>' : '') +
+        '<section class="card"><div class="card-head"><h2>Latest visitor reports</h2><a href="#visitors/all" class="small strong-link">See all</a></div>' +
         visitorTable(x.recentVisitors, false) + '</section>' +
-        '<div class="row"><section class="card"><div class="card-head"><h2>Open disputes</h2><span class="small muted" style="font-weight:600">Committee only</span></div>' +
-        (x.openDisputesList.length ? x.openDisputesList.map(function (c) {
-          return '<a href="#dispute/' + esc(c.id) + '" class="card" style="text-decoration:none;color:inherit;box-shadow:none;gap:4px">' +
-            '<div class="card-head"><span class="mono">Case ' + esc(c.caseNo) + '</span>' + badge(c.status) + '</div>' +
-            '<div>' + esc(c.kind) + (c.place ? ', ' + esc(c.place) : '') + '</div>' +
-            '<div class="small muted">Happened ' + d(c.happenedOn) + (c.meetingDate ? ' · Meeting ' + d(c.meetingDate) : '') + '</div></a>';
-        }).join('') : '<div class="empty">No open disputes.</div>') + '</section>' +
-        '<section class="card"><div class="card-head"><h2>Next event</h2>' + (ev ? '<a href="#event/' + esc(ev.id) + '" class="small" style="font-weight:600">Open</a>' : '') + '</div>' +
-        (ev ? '<div style="font-weight:600">' + esc(ev.name) + ', ' + d(ev.date) + '</div>' +
-          '<div class="card-head"><span>Collected</span><strong>' + rs(ev.collected) + '</strong></div>' +
-          '<div class="bar" aria-hidden="true"><div style="width:' + pct + '%"></div></div>' +
-          '<div class="card-head small muted"><span>Spent so far ' + rs(ev.spent) + '</span><span>' + ev.donationCount + ' donations</span></div>'
-          : '<div class="empty">No upcoming event. <a href="#funds">Create one</a>.</div>') +
-        '</section></div>');
+        '</div><div class="stack">' +
+        '<section class="card"><div class="card-head"><h2>Next event</h2>' + (ev ? '<a href="#event/' + esc(ev.id) + '" class="small strong-link">Open</a>' : '') + '</div>' +
+        (ev ? '<div><div style="font-weight:600;font-size:16px">' + esc(ev.name) + '</div><div class="small muted">' + longDate(ev.date) + ' · ' + daysUntil(ev.date) + '</div></div>' +
+          '<dl class="facts"><dt>Collected</dt><dd class="mono">' + rs(ev.collected) + '</dd><dt>Spent</dt><dd class="mono">' + rs(ev.spent) + '</dd>' +
+          '<dt>Balance</dt><dd class="mono" style="font-weight:600;color:var(--' + (ev.balance < 0 ? 'danger' : 'success') + ')">' + rs(ev.balance) + '</dd></dl>' +
+          '<div class="bar" aria-hidden="true"><div style="width:' + (ev.collected > 0 ? Math.min(100, Math.round(ev.spent / ev.collected * 100)) : 0) + '%"></div></div>'
+          : '<div class="empty">No upcoming event. <a href="#funds">Create one</a>.</div>') + '</section>' +
+        '<section class="card"><div class="card-head"><h2>Dispute meetings</h2><a href="#disputes" class="small strong-link">All cases</a></div>' +
+        (x.meetings.length ? x.meetings.map(function (c) {
+          return '<a class="line click" href="#dispute/' + esc(c.id) + '"><div><span class="mono">Case ' + esc(c.caseNo) + '</span> · ' + esc(c.kind) + '</div>' +
+            '<div class="small muted">' + longDate(c.meetingDate) + '</div></a>';
+        }).join('') : '<div class="empty">' + (x.openDisputes ? x.openDisputes + ' open ' + (x.openDisputes === 1 ? 'case' : 'cases') + ', no meeting date set.' : 'No open disputes.') + '</div>') + '</section>' +
+        '<section class="card"><div class="card-head"><h2>Latest money entries</h2><a href="#reports/money" class="small strong-link">Statement</a></div>' +
+        (x.recentMoney.length ? x.recentMoney.map(function (m) {
+          var inflow = m.kind === 'donation';
+          return '<a class="line click" href="#event/' + esc(m.eventId) + '"><div><div>' + esc(m.what) + '</div><div class="small muted">' + d(m.date) + (m.event ? ' · ' + esc(m.event) : '') + '</div></div>' +
+            '<div class="mono" style="font-weight:600;white-space:nowrap;color:var(--' + (inflow ? 'success' : 'ink') + ')">' + (inflow ? '+ ' : '− ') + rs(m.amount) + '</div></a>';
+        }).join('') : '<div class="empty">No donations or expenses yet.</div>') + '</section>' +
+        (desk ? '<section class="card"><h2>Backups</h2><div class="small">' + backupText(desk) + '</div>' +
+          (isAdmin() ? '<div class="actions"><button class="btn sm" type="button" data-backup>Back up now</button></div>' : '') + '</section>' : '') +
+        '</div></div>');
       wireVisitorRows();
+      $$('[data-left]', v).forEach(function (b) {
+        b.onclick = function () {
+          busy(b, true, '…');
+          api('setVisitorStatus', b.dataset.left, 'Left', '').then(function () { toast('Marked as left.'); route(); }).catch(function (e) { busy(b, false); fail(e); });
+        };
+      });
+      wireBackupButtons(v);
     }).catch(fail);
   };
+  function tileLink(href, label, n, sub, tone) {
+    return '<a class="tile tone-' + tone + '" href="' + href + '"><div class="label">' + esc(label) + '</div><div class="num">' + esc(n) +
+      '</div><div class="small muted">' + esc(sub) + '</div></a>';
+  }
+  function longDate(iso) {
+    if (!iso) return '';
+    var p = String(iso).slice(0, 10).split('-');
+    var dt = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+    return dt.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  }
+  function dayDiff(iso) { return Math.round((new Date(iso + 'T00:00:00Z') - new Date(today() + 'T00:00:00Z')) / 86400000); }
+  function daysAgo(iso) { var n = -dayDiff(iso); return n === 1 ? '1 day ago' : n + ' days ago'; }
+  function daysUntil(iso) { var n = dayDiff(iso); return n === 0 ? 'today' : n === 1 ? 'tomorrow' : 'in ' + n + ' days'; }
+
+  /* ---------- Desktop app extras (backups, PDF, updates). Hidden in the Google version. ---------- */
+
+  var DESKTOP = !!window.swcDesktop && !!window.swcDesktop.info;
+  function desktopInfo() { return DESKTOP ? window.swcDesktop.info().catch(function () { return null; }) : Promise.resolve(null); }
+  function backupAge(desk) { return desk && desk.lastBackup ? Math.floor((Date.now() - new Date(desk.lastBackup).getTime()) / 86400000) : null; }
+  function backupText(desk) {
+    var age = backupAge(desk);
+    var last = age === null ? 'No USB backup has been made yet.' : 'Last backup: ' + (age === 0 ? 'today' : age === 1 ? 'yesterday' : age + ' days ago') + '.';
+    return last + ' The app also keeps a daily copy on this PC.';
+  }
+  function backupBanner(desk) {
+    if (!desk || !isAdmin()) return '';
+    var age = backupAge(desk);
+    if (age !== null && age < 7) return '';
+    return '<div class="banner"><div><strong>' + (age === null ? 'No backup on a USB drive yet.' : 'No backup for ' + age + ' days.') + '</strong> ' +
+      'If this PC breaks, records that are not backed up are lost. Plug in a USB drive and back up now.</div>' +
+      '<button class="btn primary sm" type="button" data-backup>Back up now</button></div>';
+  }
+  function wireBackupButtons(root) {
+    $$('[data-backup]', root).forEach(function (b) {
+      b.onclick = function () { window.swcDesktop.action('backup').then(function (ok) { if (ok) route(); }); };
+    });
+  }
+
   function tile(label, n, sub, color) {
     return '<div class="tile"><div class="label">' + esc(label) + '</div><div class="num"' + (color ? ' style="color:' + color + '"' : '') + '>' + esc(n) +
       '</div><div class="small muted">' + esc(sub) + '</div></div>';
@@ -262,10 +388,10 @@
     return '<div class="table-wrap"><table><thead><tr><th>Arrived</th><th>Quarter</th>' + (mine ? '' : '<th>Staff</th>') +
       '<th>Visitors</th><th>Relation</th><th>Leaving</th><th>Stay</th><th>Status</th></tr></thead><tbody>' +
       rows.map(function (v) {
-        return '<tr class="click" data-visitor="' + esc(v.id) + '" tabindex="0"><td>' + d(v.arrival) + '</td><td class="mono">' + esc(v.quarter) + '</td>' +
+        return '<tr class="click" data-visitor="' + esc(v.id) + '" tabindex="0"><td class="nw">' + d(v.arrival) + '</td><td class="mono">' + esc(v.quarter) + '</td>' +
           (mine ? '' : '<td>' + esc(v.staffName) + '</td>') +
           '<td>' + esc(v.visitorNames) + ' <span class="muted">(' + esc(v.count) + ')</span></td><td>' + esc(v.relation) + '</td>' +
-          '<td>' + d(v.leaving) + '</td><td style="font-weight:600">' + stayText(v.nights) + '</td><td>' + badge(v.status) + '</td></tr>';
+          '<td class="nw">' + d(v.leaving) + '</td><td style="font-weight:600">' + stayText(v.nights) + '</td><td>' + badge(v.status) + '</td></tr>';
       }).join('') + '</tbody></table></div>';
   }
   var visitorCache = {};
@@ -296,11 +422,18 @@
         '<div class="actions">' +
         (mineOnly ? '' : '<button class="btn primary" type="button" data-st="Approved">Approve</button><button class="btn danger" type="button" data-st="Not approved">Not approved</button>') +
         (v.status !== 'Left' ? '<button class="btn" type="button" data-st="Left">Visitor has left</button>' : '') +
-        (v.status !== 'Left' ? '<a class="btn" href="#visitor-edit/' + esc(v.id) + '" data-edit>Change dates</a>' : '') +
+        (mineOnly ? (v.status !== 'Left' ? '<a class="btn" href="#visitor-edit/' + esc(v.id) + '" data-edit>Change dates</a>' : '')
+          : '<a class="btn" href="#visitor-edit/' + esc(v.id) + '" data-edit>Edit</a><button class="btn ghost danger" type="button" data-delete>Delete</button>') +
         '<button class="btn ghost" type="button" data-close>Close</button></div>', function (root) {
         $('[data-close]', root).onclick = closeDialog;
         var ph = $('[data-photo]', root); if (ph) ph.onclick = function () { showPhotos([v.photoId], 'ID photo'); };
         var ed = $('[data-edit]', root); if (ed) ed.onclick = function () { visitorCache[v.id] = v; closeDialog(); };
+        var del = $('[data-delete]', root);
+        if (del) del.onclick = function () {
+          if (!confirm('Delete this visitor report for ' + v.visitorNames + '? This cannot be undone.')) return;
+          busy(del, true, 'Deleting…');
+          api('deleteVisitor', v.id).then(function () { closeDialog(); toast('Deleted.'); route(); }).catch(function (e) { busy(del, false); fail(e); });
+        };
         $$('[data-st]', root).forEach(function (b) {
           b.onclick = function () {
             busy(b, true);
@@ -318,16 +451,37 @@
     loading();
     api('listVisitors', filter).then(function (rows) {
       var f = [['staying', 'Staying now'], ['review', 'To review'], ['all', 'All reports']];
-      view('<div class="card-head"><h1>Visitor reports</h1><a class="btn primary" href="#visitor-new">Report a visitor</a></div>' +
-        '<div class="chips" role="group" aria-label="Show">' + f.map(function (x) {
-          return '<a class="chip' + (x[0] === filter ? ' on' : '') + '" href="#visitors/' + x[0] + '" style="text-decoration:none;color:inherit">' + x[1] + '</a>';
+      var months = {};
+      rows.forEach(function (r) { months[String(r.arrival).slice(0, 7)] = true; });
+      view('<div class="card-head"><h1>Visitor reports</h1><a class="btn primary" href="#visitor-new">+ Report a visitor</a></div>' +
+        '<div class="toolbar"><div class="chips" role="group" aria-label="Show">' + f.map(function (x) {
+          return '<a class="chip' + (x[0] === filter ? ' on' : '') + '" href="#visitors/' + x[0] + '">' + x[1] + '</a>';
         }).join('') + '</div>' +
-        '<section class="card">' + visitorTable(rows, false) + '</section>');
-      $$('.chip.on').forEach(function (c) { c.style.color = 'var(--on-maroon)'; });
+        '<div class="filters"><input type="search" id="vsearch" placeholder="Search name, quarter or staff" aria-label="Search">' +
+        '<select id="vmonth" aria-label="Month"><option value="">Any month</option>' + Object.keys(months).sort().reverse().map(function (m) {
+          return '<option value="' + m + '">' + monthName(m) + '</option>';
+        }).join('') + '</select></div></div>' +
+        '<section class="card"><div class="small muted" id="vcount"></div><div id="vlist"></div></section>');
       setActive('visitors');
-      wireVisitorRows();
+      function draw() {
+        var q = $('#vsearch').value.trim().toLowerCase(), m = $('#vmonth').value;
+        var shown = rows.filter(function (r) {
+          if (m && String(r.arrival).slice(0, 7) !== m && String(r.leaving).slice(0, 7) !== m) return false;
+          if (!q) return true;
+          return [r.visitorNames, r.quarter, r.staffName, r.relation, r.phone, r.purpose].join(' ').toLowerCase().indexOf(q) >= 0;
+        });
+        $('#vcount').textContent = shown.length + (shown.length === 1 ? ' report' : ' reports') + (q || m ? ' match' : '');
+        $('#vlist').innerHTML = visitorTable(shown, false);
+        wireVisitorRows();
+      }
+      $('#vsearch').oninput = draw; $('#vmonth').onchange = draw;
+      draw();
     }).catch(fail);
   };
+  function monthName(ym) {
+    var p = ym.split('-');
+    return new Date(Number(p[0]), Number(p[1]) - 1, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  }
 
   var RELATIONS = ['Family', 'Relative', 'Friend', 'Worker or service', 'Other'];
   var ID_TYPES = ['Aadhaar', 'Voter ID', 'Driving licence', 'Passport', 'RC (Registration Certificate)', 'Other', 'Not seen'];
@@ -340,15 +494,16 @@
   routes['visitor-new'] = function () { visitorForm(null); };
 
   function visitorForm(v) {
-    var me = S.user, staff = S.boot.staff;
+    var me = S.user, names = S.boot.knownNames || S.boot.staff;
     var editing = !!v;
-    v = v || { arrival: today(), leaving: '', count: '1', relation: '', quarter: me.quarter };
-    var staffPick = isCommittee() && !editing
-      ? '<div class="field"><label for="vstaff">Staff member *</label><select id="vstaff" name="staffId" required><option value="">Choose…</option>' +
-        staff.map(function (s) { return '<option value="' + esc(s.id) + '" data-q="' + esc(s.quarter) + '">' + esc(s.name) + '</option>'; }).join('') + '</select></div>'
+    v = v || { arrival: today(), leaving: '', count: '1', relation: '', quarter: isCommittee() ? '' : me.quarter };
+    // The committee types any name; names used before are suggested, with their quarter.
+    var staffPick = isCommittee()
+      ? '<div class="field"><label for="vstaff">Staff member *</label><input type="text" id="vstaff" name="staffName" list="vnames" autocomplete="off" value="' + esc(editing ? v.staffName : '') + '" placeholder="Type the staff member\'s name">' +
+        '<datalist id="vnames">' + names.map(function (s) { return '<option value="' + esc(s.name) + '">' + (s.quarter ? 'Quarter ' + esc(s.quarter) : '') + '</option>'; }).join('') + '</datalist></div>'
       : '<div class="field"><span class="lbl">Staff member</span><div class="output">' + esc(editing ? v.staffName : me.name) + '</div></div>';
     var photo = null;
-    view('<h1>' + (editing ? 'Change visitor dates' : 'Report a visitor') + '</h1>' +
+    view('<h1>' + (editing ? (isCommittee() ? 'Edit visitor report' : 'Change visitor dates') : 'Report a visitor') + '</h1>' +
       '<div class="note">Tell the committee when anyone who is not school staff stays in or visits your quarter. Fields marked * are needed.</div>' +
       '<form class="card stack" id="vform" novalidate>' +
       '<div class="grid2">' + staffPick +
@@ -372,8 +527,12 @@
       '<div class="actions"><a class="btn" href="#home">Cancel</a><button class="btn primary big" type="submit">' + (editing ? 'Save changes' : 'Send to committee') + '</button></div>' +
       '</form>');
 
-    var sel = $('#vstaff');
-    if (sel) sel.onchange = function () { var o = sel.options[sel.selectedIndex]; if (o && o.dataset.q) $('#vq').value = o.dataset.q; };
+    var who = $('#vstaff');
+    if (who) who.oninput = function () {
+      var n = who.value.trim().toLowerCase();
+      var hit = names.filter(function (s) { return s.name.toLowerCase() === n; })[0];
+      if (hit && hit.quarter) $('#vq').value = hit.quarter;
+    };
     function dur() {
       var n = nights($('#va').value, $('#vl').value);
       var out = $('#vdur'), warn = $('#vlong');
@@ -405,13 +564,17 @@
     $('#vform').onsubmit = function (e) {
       e.preventDefault();
       var data = formData(e.target);
-      if (isCommittee() && !editing && !data.staffId) return fail(new Error('Choose the staff member.'));
+      if (isCommittee() && !String(data.staffName || '').trim()) return fail(new Error('Type the name of the staff member.'));
       if (!data.visitorNames || !data.relation || !data.arrival || !data.leaving) return fail(new Error('Please fill in the fields marked *.'));
-      if (editing) { data.id = v.id; data.staffId = v.staffId; }
+      if (editing) {
+        data.id = v.id;
+        if (isCommittee() && data.staffName.trim().toLowerCase() === String(v.staffName).toLowerCase()) data.staffId = v.staffId;
+      }
       if (photo) data.photo = photo;
       var btn = $('button[type=submit]', e.target); busy(btn, true, 'Sending…');
       api('saveVisitor', data).then(function () {
-        toast(editing ? 'Dates updated.' : 'Sent. The committee will review it.');
+        toast(editing ? 'Saved.' : isCommittee() ? 'Visitor report saved.' : 'Sent. The committee will review it.');
+        refreshBoot();
         go(isCommittee() ? 'visitors' : 'home');
       }).catch(function (err) { busy(btn, false); fail(err); });
     };
@@ -467,7 +630,7 @@
     if (!rows.length) return '<div class="empty">You have not sent any dispute reports. Anonymous reports are not listed here.</div>';
     return '<div class="table-wrap"><table><thead><tr><th>Case</th><th>About</th><th>Sent</th><th>Status</th><th>Meeting</th></tr></thead><tbody>' +
       rows.map(function (c) {
-        return '<tr><td class="mono">' + esc(c.caseNo) + '</td><td>' + esc(c.kind) + '</td><td>' + d(c.createdAt) + '</td><td>' + badge(c.status) + '</td><td>' + (d(c.meetingDate) || '—') + '</td></tr>';
+        return '<tr><td class="mono">' + esc(c.caseNo) + '</td><td>' + esc(c.kind) + '</td><td class="nw">' + d(c.createdAt) + '</td><td>' + badge(c.status) + '</td><td class="nw">' + (d(c.meetingDate) || '—') + '</td></tr>';
       }).join('') + '</tbody></table></div>';
   }
 
@@ -479,7 +642,7 @@
         '<section class="card">' + (rows.length ? '<div class="table-wrap"><table><thead><tr><th>Case</th><th>About</th><th>Where</th><th>Happened</th><th>Status</th><th>Meeting</th></tr></thead><tbody>' +
         rows.map(function (c) {
           return '<tr class="click" tabindex="0" data-case="' + esc(c.id) + '"><td class="mono">' + esc(c.caseNo) + '</td><td>' + esc(c.kind) + '</td><td>' + (esc(c.place) || '—') + '</td>' +
-            '<td>' + d(c.happenedOn) + '</td><td>' + badge(c.status) + '</td><td>' + (d(c.meetingDate) || '—') + '</td></tr>';
+            '<td class="nw">' + d(c.happenedOn) + '</td><td>' + badge(c.status) + '</td><td class="nw">' + (d(c.meetingDate) || '—') + '</td></tr>';
         }).join('') + '</tbody></table></div>' : '<div class="empty">No disputes reported.</div>') + '</section>');
       $$('[data-case]').forEach(function (tr) {
         tr.onclick = function () { go('dispute/' + tr.dataset.case); };
@@ -544,7 +707,7 @@
         '<div><button class="btn primary" type="submit" style="width:100%">Create event</button></div></form></section>' +
         '<section class="card"><h2>Events</h2>' + (x.events.length ? '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Event</th><th class="num">Collected</th><th class="num">Spent</th><th class="num">Balance</th><th>Status</th></tr></thead><tbody>' +
         x.events.map(function (e) {
-          return '<tr class="click" tabindex="0" data-ev="' + esc(e.id) + '"><td>' + d(e.date) + '</td><td style="font-weight:600">' + esc(e.name) + '</td>' +
+          return '<tr class="click" tabindex="0" data-ev="' + esc(e.id) + '"><td class="nw">' + d(e.date) + '</td><td style="font-weight:600">' + esc(e.name) + '</td>' +
             '<td class="num">' + num(e.collected) + '</td><td class="num">' + num(e.spent) + '</td><td class="num">' + num(e.balance) + '</td>' +
             '<td>' + (e.status === 'Closed' ? badge('Closed') : '<span class="badge b-approved">Open</span>') + '</td></tr>';
         }).join('') + '</tbody></table></div>' : '<div class="empty">No events yet. Create the first one above.</div>') + '</section>');
@@ -569,7 +732,7 @@
       view('<div class="actions no-print"><a href="#funds" class="btn ghost">← All events</a></div>' +
         '<div class="card-head"><div><h1>' + esc(e.name) + '</h1><div class="muted">' + d(e.date) + (closed ? ' · Closed' : '') + '</div></div>' +
         '<div class="actions no-print">' + (closed ? '' : '<button class="btn primary" type="button" id="addDon">Add donation</button><a class="btn" href="#expense-new/' + esc(e.id) + '">Add expense</a>') +
-        '<button class="btn" type="button" id="printBtn">Print summary</button>' +
+        '<button class="btn" type="button" id="printBtn">Print summary</button>' + (DESKTOP ? '<button class="btn" type="button" id="pdfBtn">Save as PDF</button>' : '') +
         '<button class="btn ghost" type="button" id="closeBtn">' + (closed ? 'Reopen event' : 'Close event') + '</button></div></div>' +
         '<div class="tiles">' + tile('Collected', rs(e.collected), e.donationCount + (e.donationCount === 1 ? ' donation' : ' donations')) +
         tile('Spent', rs(e.spent), e.expenseCount + (e.expenseCount === 1 ? ' expense, ' : ' expenses, ') + e.expensesWithBills + ' with bills') +
@@ -577,13 +740,13 @@
         '<div class="row" style="align-items:flex-start"><section class="card"><h2>Donations</h2>' +
         (e.donations.length ? '<div class="table-wrap"><table><thead><tr><th>Date</th><th>From</th><th>Mode</th><th class="num">Amount</th><th class="no-print"></th></tr></thead><tbody>' +
           e.donations.map(function (n) {
-            return '<tr><td>' + d(n.date) + '</td><td>' + esc(n.donor) + (n.note ? '<div class="small muted">' + esc(n.note) + '</div>' : '') + '</td><td>' + esc(n.mode) + '</td>' +
+            return '<tr><td class="nw">' + d(n.date) + '</td><td>' + esc(n.donor) + (n.note ? '<div class="small muted">' + esc(n.note) + '</div>' : '') + '</td><td>' + esc(n.mode) + '</td>' +
               '<td class="num">' + num(n.amount) + '</td><td class="no-print">' + (closed ? '' : '<button class="btn sm ghost danger" type="button" data-del="donation" data-id="' + esc(n.id) + '" aria-label="Delete donation">Delete</button>') + '</td></tr>';
           }).join('') + '</tbody></table></div>' : '<div class="empty">No donations yet.</div>') + '</section>' +
         '<section class="card"><h2>Expenses</h2>' +
         (e.expenses.length ? '<div class="table-wrap"><table><thead><tr><th>Date</th><th>What</th><th>Bills</th><th class="num">Amount</th><th class="no-print"></th></tr></thead><tbody>' +
           e.expenses.map(function (x, i) {
-            return '<tr><td>' + d(x.date) + '</td><td><button class="btn sm ghost" type="button" data-items="' + i + '" style="padding:0;min-height:0;text-align:left">' + esc(x.category) +
+            return '<tr><td class="nw">' + d(x.date) + '</td><td><button class="btn sm ghost" type="button" data-items="' + i + '" style="padding:0;min-height:0;text-align:left">' + esc(x.category) +
               ' · ' + x.items.length + (x.items.length === 1 ? ' item' : ' items') + '</button><div class="small muted">Paid by ' + esc(x.paidBy) + '</div></td>' +
               '<td>' + (x.photoIds.length ? '<button class="btn sm ghost" type="button" data-bills="' + i + '" style="padding:0;min-height:0">' + x.photoIds.length + (x.photoIds.length === 1 ? ' photo' : ' photos') + '</button>'
                 : '<span style="color:var(--warning);font-weight:600;font-size:13px">Missing</span>') + '</td>' +
@@ -592,6 +755,7 @@
         '<div class="small muted">Every entry records who added it and when.</div>');
 
       $('#printBtn').onclick = function () { window.print(); };
+      var pdfBtn = $('#pdfBtn'); if (pdfBtn) pdfBtn.onclick = function () { window.swcDesktop.action('pdf', e.name + ' ' + d(e.date)); };
       $('#closeBtn').onclick = function () {
         api('saveEvent', { id: e.id, name: e.name, date: e.date, status: closed ? 'Open' : 'Closed' }).then(function () { route(); }).catch(fail);
       };
@@ -798,6 +962,137 @@
     draw();
   }
 
+  /* ---------- Print reports ---------- */
+
+  var REPORTS = [['visitors', 'Visitor register'], ['disputes', 'Dispute cases'], ['money', 'Money statement']];
+  var reportRange = null;
+
+  routes.reports = function (kind) {
+    if (!isCommittee()) return go('home');
+    kind = kind || 'visitors';
+    var t = today(), y = Number(t.slice(0, 4)), m = Number(t.slice(5, 7));
+    function ymd(yy, mm, dd) { var dt = new Date(Date.UTC(yy, mm - 1, dd)); return dt.toISOString().slice(0, 10); }
+    // School year runs April to March.
+    var sy = m >= 4 ? y : y - 1;
+    var quick = [
+      ['This month', ymd(y, m, 1), ymd(y, m + 1, 0)],
+      ['Last month', ymd(y, m - 1, 1), ymd(y, m, 0)],
+      ['This school year', ymd(sy, 4, 1), ymd(sy + 1, 3, 31)],
+      ['This calendar year', ymd(y, 1, 1), ymd(y, 12, 31)]
+    ];
+    reportRange = reportRange || { from: quick[0][1], to: quick[0][2] };
+    view('<div class="no-print stack"><h1>Print reports</h1>' +
+      '<div class="chips" role="group" aria-label="Report">' + REPORTS.map(function (r) {
+        return '<a class="chip' + (r[0] === kind ? ' on' : '') + '" href="#reports/' + r[0] + '">' + r[1] + '</a>';
+      }).join('') + '</div>' +
+      '<section class="card"><div class="grid-report"><div class="field"><label for="rfrom">From</label><input type="date" id="rfrom" value="' + reportRange.from + '"></div>' +
+      '<div class="field"><label for="rto">To</label><input type="date" id="rto" value="' + reportRange.to + '"></div>' +
+      '<div class="actions" style="align-self:end"><button class="btn primary" type="button" id="rshow">Show report</button>' +
+      '<button class="btn" type="button" id="rprint">Print</button>' + (DESKTOP ? '<button class="btn" type="button" id="rpdf">Save as PDF</button>' : '') + '</div></div>' +
+      '<div class="chips">' + quick.map(function (q, i) { return '<button class="chip" type="button" data-q="' + i + '">' + q[0] + '</button>'; }).join('') + '</div>' +
+      (DESKTOP ? '' : '<div class="small muted">To save a PDF, press Print and choose "Save as PDF" as the printer.</div>') + '</section></div>' +
+      '<div id="rout"></div>');
+    setActive('reports');
+    function show() {
+      var from = $('#rfrom').value, to = $('#rto').value;
+      reportRange = { from: from, to: to };
+      $('#rout').innerHTML = '<div class="loading">Loading…</div>';
+      return api('reportData', from, to).then(function (r) {
+        $('#rout').innerHTML = '<article class="report">' + reportHead(REPORTS.filter(function (x) { return x[0] === kind; })[0][1], r) +
+          (kind === 'visitors' ? visitorReport(r) : kind === 'disputes' ? disputeReport(r) : moneyReport(r)) + '</article>';
+        return true;
+      }).catch(function (e) { $('#rout').innerHTML = ''; fail(e); return false; });
+    }
+    $('#rshow').onclick = show;
+    $$('[data-q]').forEach(function (b) {
+      b.onclick = function () { var q = quick[Number(b.dataset.q)]; $('#rfrom').value = q[1]; $('#rto').value = q[2]; show(); };
+    });
+    $('#rprint').onclick = function () { show().then(function (ok) { if (ok) window.print(); }); };
+    var pdf = $('#rpdf');
+    if (pdf) pdf.onclick = function () {
+      show().then(function (ok) {
+        if (ok) window.swcDesktop.action('pdf', REPORTS.filter(function (x) { return x[0] === kind; })[0][1] + ' ' + d(reportRange.from) + ' to ' + d(reportRange.to));
+      });
+    };
+    show();
+  };
+
+  function reportHead(title, r) {
+    return '<header class="report-head">' + sealHtml('report-seal') + '<div><div class="report-org">' + esc(BRAND.committeeName) + ', ' + esc(BRAND.schoolName) + '</div>' +
+      '<h1>' + esc(title) + '</h1><div class="muted">' + d(r.from) + ' to ' + d(r.to) + ' · printed ' + d(r.today) + '</div></div></header>';
+  }
+  function sumTable(rows) {
+    return '<div class="report-sum">' + rows.map(function (x) {
+      return '<div><div class="small muted">' + esc(x[0]) + '</div><div class="report-num' + (x[2] ? ' ' + x[2] : '') + '">' + esc(x[1]) + '</div></div>';
+    }).join('') + '</div>';
+  }
+  function signLines() {
+    return '<div class="sign"><div>Prepared by (Secretary)</div><div>Checked by (Treasurer)</div><div>Approved by (President)</div></div>';
+  }
+
+  function visitorReport(r) {
+    var v = r.visitors;
+    var people = v.reduce(function (n, x) { return n + Number(x.count || 1); }, 0);
+    var nightsTotal = v.reduce(function (n, x) { return n + Number(x.nights || 0); }, 0);
+    var quarters = {}; v.forEach(function (x) { quarters[x.quarter] = true; });
+    var long = v.filter(function (x) { return Number(x.nights) > S.boot.settings.longStayNights; }).length;
+    return sumTable([['Visitor reports', v.length], ['People', people], ['Quarters', Object.keys(quarters).length], ['Nights in total', nightsTotal],
+      ['Long stays (over ' + S.boot.settings.longStayNights + ' nights)', long]]) +
+      (v.length ? '<table class="report-table"><thead><tr><th>#</th><th>Arrived</th><th>Left / leaving</th><th>Stay</th><th>Quarter</th><th>Staff</th><th>Visitors</th><th>Relation</th><th>ID seen</th><th>Status</th></tr></thead><tbody>' +
+        v.map(function (x, i) {
+          return '<tr><td>' + (i + 1) + '</td><td class="nw">' + d(x.arrival) + '</td><td class="nw">' + d(x.leaving) + '</td><td>' + stayText(x.nights) + '</td><td class="mono">' + esc(x.quarter) + '</td>' +
+            '<td>' + esc(x.staffName) + '</td><td>' + esc(x.visitorNames) + ' (' + esc(x.count) + ')' + (x.phone ? '<div class="small muted">' + esc(x.phone) + '</div>' : '') + '</td>' +
+            '<td>' + esc(x.relation) + '</td><td>' + (esc(x.idType) || '—') + '</td><td>' + esc(x.status) + '</td></tr>';
+        }).join('') + '</tbody></table>' : '<div class="empty">No visitors in these dates.</div>') + signLines();
+  }
+
+  function disputeReport(r) {
+    var c = r.disputes;
+    var count = function (st) { return c.filter(function (x) { return x.status === st; }).length; };
+    return '<div class="report-note">Confidential: for the Staff Welfare Committee only.</div>' +
+      sumTable([['Cases', c.length], ['Open', count('Open')], ['Meeting set', count('Meeting set')], ['Resolved', count('Resolved')], ['Closed', count('Closed')]]) +
+      (c.length ? '<table class="report-table"><thead><tr><th>Case</th><th>Happened</th><th>About</th><th>People involved</th><th>Where</th><th>Reporter wants</th><th>Status</th><th>Meeting</th></tr></thead><tbody>' +
+        c.map(function (x) {
+          return '<tr><td class="mono">' + esc(x.caseNo) + '</td><td class="nw">' + d(x.happenedOn) + '</td><td>' + esc(x.kind) + '</td><td>' + esc(x.involved) + '</td>' +
+            '<td>' + (esc(x.place) || '—') + '</td><td>' + (esc(x.wish) || '—') + '</td><td>' + esc(x.status) + '</td><td class="nw">' + (d(x.meetingDate) || '—') + '</td></tr>';
+        }).join('') + '</tbody></table>' : '<div class="empty">No dispute cases in these dates.</div>') + signLines();
+  }
+
+  function moneyReport(r) {
+    var inSum = r.donations.reduce(function (n, x) { return n + Number(x.amount); }, 0);
+    var outSum = r.expenses.reduce(function (n, x) { return n + Number(x.total); }, 0);
+    var byEvent = {}, byCat = {};
+    r.donations.forEach(function (x) { var k = x.event || 'No event'; byEvent[k] = byEvent[k] || [0, 0]; byEvent[k][0] += Number(x.amount); });
+    r.expenses.forEach(function (x) {
+      var k = x.event || 'No event'; byEvent[k] = byEvent[k] || [0, 0]; byEvent[k][1] += Number(x.total);
+      byCat[x.category] = (byCat[x.category] || 0) + Number(x.total);
+    });
+    var bal = inSum - outSum;
+    return sumTable([['Collected', rs(inSum)], ['Spent', rs(outSum)], ['Balance for these dates', rs(bal), bal < 0 ? 'neg' : 'pos'],
+      ['Expenses without a bill photo', r.expenses.filter(function (x) { return !x.bills; }).length]]) +
+      '<h2>By event</h2>' + (Object.keys(byEvent).length ? '<table class="report-table"><thead><tr><th>Event</th><th class="num">Collected</th><th class="num">Spent</th><th class="num">Balance</th></tr></thead><tbody>' +
+        Object.keys(byEvent).sort().map(function (k) {
+          var e = byEvent[k];
+          return '<tr><td>' + esc(k) + '</td><td class="num">' + num(e[0]) + '</td><td class="num">' + num(e[1]) + '</td><td class="num">' + num(e[0] - e[1]) + '</td></tr>';
+        }).join('') + '<tr class="total-row"><td>Total</td><td class="num">' + num(inSum) + '</td><td class="num">' + num(outSum) + '</td><td class="num">' + num(bal) + '</td></tr></tbody></table>'
+        : '<div class="empty">No money entries in these dates.</div>') +
+      (Object.keys(byCat).length ? '<h2>Spending by category</h2><table class="report-table"><thead><tr><th>Category</th><th class="num">Spent</th><th class="num">Share</th></tr></thead><tbody>' +
+        Object.keys(byCat).sort(function (a, b) { return byCat[b] - byCat[a]; }).map(function (k) {
+          return '<tr><td>' + esc(k) + '</td><td class="num">' + num(byCat[k]) + '</td><td class="num">' + (outSum ? Math.round(byCat[k] / outSum * 100) : 0) + '%</td></tr>';
+        }).join('') + '</tbody></table>' : '') +
+      '<h2>Donations</h2>' + (r.donations.length ? '<table class="report-table"><thead><tr><th>Date</th><th>From</th><th>Event</th><th>Mode</th><th>Note</th><th class="num">Amount</th></tr></thead><tbody>' +
+        r.donations.map(function (x) {
+          return '<tr><td class="nw">' + d(x.date) + '</td><td>' + esc(x.donor) + '</td><td>' + esc(x.event) + '</td><td>' + esc(x.mode) + '</td><td>' + esc(x.note) + '</td><td class="num">' + num(x.amount) + '</td></tr>';
+        }).join('') + '<tr class="total-row"><td colspan="5">Total collected</td><td class="num">' + num(inSum) + '</td></tr></tbody></table>' : '<div class="empty">No donations.</div>') +
+      '<h2>Expenses</h2>' + (r.expenses.length ? '<table class="report-table"><thead><tr><th>Date</th><th>Category</th><th>Items</th><th>Event</th><th>Paid by</th><th>Bill</th><th class="num">Amount</th></tr></thead><tbody>' +
+        r.expenses.map(function (x) {
+          return '<tr><td class="nw">' + d(x.date) + '</td><td>' + esc(x.category) + (x.description ? '<div class="small muted">' + esc(x.description) + '</div>' : '') + '</td>' +
+            '<td class="small">' + x.items.map(function (it) { return esc(it.item) + ' ' + esc(it.qty) + esc(it.unit ? ' ' + it.unit : '') + ' × ' + num(it.rate); }).join('<br>') + '</td>' +
+            '<td>' + esc(x.event) + '</td><td>' + esc(x.paidBy) + '</td><td>' + (x.bills ? 'Yes' : '<strong>No</strong>') + '</td><td class="num">' + num(x.total) + '</td></tr>';
+        }).join('') + '<tr class="total-row"><td colspan="6">Total spent</td><td class="num">' + num(outSum) + '</td></tr></tbody></table>' : '<div class="empty">No expenses.</div>') +
+      signLines();
+  }
+
   /* ---------- Change PIN ---------- */
 
   routes.pin = function () {
@@ -841,10 +1136,27 @@
             '<td><select data-f="active" aria-label="Active"><option value="yes"' + (s.active === 'yes' ? ' selected' : '') + '>Yes</option><option value="no"' + (s.active !== 'yes' ? ' selected' : '') + '>No</option></select></td>' +
             '<td style="white-space:nowrap"><button class="btn sm" type="button" data-save>Save</button> <button class="btn sm ghost" type="button" data-reset>New PIN</button></td></tr>';
         }).join('') + '</tbody></table></div></section>' +
+        '<section class="card"><h2>Name and logo</h2><form class="stack" id="brandform" novalidate>' +
+        '<div class="grid2"><div class="field"><label for="bcn">Committee name</label><input type="text" id="bcn" value="' + esc(BRAND.committeeName) + '"></div>' +
+        '<div class="field"><label for="bsn">School name</label><input type="text" id="bsn" value="' + esc(BRAND.schoolName) + '"></div></div>' +
+        '<div class="field"><span class="lbl">Logo (shown in the header, on the sign-in screen and on printed reports)</span>' +
+        '<div class="actions"><div class="logo-preview" id="blogo"></div><button class="btn sm" type="button" id="blogoPick">Choose picture</button>' +
+        '<button class="btn sm ghost danger" type="button" id="blogoRm">Remove logo</button><input type="file" id="blogoFile" accept="image/*" class="hidden"></div></div>' +
+        '<div class="actions"><button class="btn primary" type="submit">Save name and logo</button></div></form></section>' +
         '<section class="card"><h2>Settings</h2><form class="stack" id="setform" novalidate>' +
         '<div class="field" style="max-width:300px"><label for="ln">Long stay: warn after how many nights</label><input type="number" id="ln" name="longStayNights" min="1" value="' + esc(st.longStayNights) + '"></div>' +
         '<div class="field"><label for="cats">Expense categories (one per line)</label><textarea id="cats" rows="6">' + esc(st.expenseCategories.join('\n')) + '</textarea></div>' +
-        '<div class="actions"><button class="btn primary" type="submit">Save settings</button></div></form></section>');
+        '<div class="actions"><button class="btn primary" type="submit">Save settings</button></div></form></section>' +
+        (DESKTOP ? '<section class="card"><h2>This PC</h2><div id="deskinfo" class="small muted">Loading…</div>' +
+          '<div class="actions"><button class="btn sm" type="button" data-backup>Back up now</button>' +
+          '<button class="btn sm" type="button" id="dupdate">Install update from zip file…</button></div></section>' : ''));
+      if (DESKTOP) {
+        desktopInfo().then(function (info) {
+          if (info) $('#deskinfo').textContent = 'App version ' + info.version + '. ' + backupText(info) + ' Records are kept in ' + info.dataDir + '.';
+        });
+        wireBackupButtons($('#view'));
+        $('#dupdate').onclick = function () { window.swcDesktop.action('update'); };
+      }
 
       function pinDialog(name, id, pin) {
         openDialog('<h2>PIN for ' + esc(name) + '</h2><p style="margin:0">Give these to ' + esc(name) + '. They will be asked to choose their own PIN when they first sign in.</p>' +
@@ -870,6 +1182,23 @@
           api('resetPin', id).then(function (r) { pinDialog($('[data-f=name]', tr).value, id, r.pin); }).catch(fail);
         };
       });
+      var logo = BRAND.logo;
+      function drawLogo() { $('#blogo').innerHTML = logo ? '<img alt="Logo" src="' + esc(logo) + '">' : '<span class="small muted">No logo: the round SWC seal is used.</span>'; }
+      drawLogo();
+      $('#blogoPick').onclick = function () { $('#blogoFile').click(); };
+      $('#blogoRm').onclick = function () { logo = ''; drawLogo(); };
+      $('#blogoFile').onchange = function (ev) {
+        var f = ev.target.files[0]; if (!f) return;
+        logoImage(f).then(function (u) { logo = u; drawLogo(); }).catch(fail);
+        ev.target.value = '';
+      };
+      $('#brandform').onsubmit = function (ev) {
+        ev.preventDefault();
+        var btn = $('button[type=submit]', ev.target); busy(btn, true);
+        api('saveSettings', { committeeName: $('#bcn').value, schoolName: $('#bsn').value, logo: logo }).then(function () {
+          return call('branding');
+        }).then(function (b) { busy(btn, false); applyBrand(b); toast('Saved.'); }).catch(function (err) { busy(btn, false); fail(err); });
+      };
       $('#setform').onsubmit = function (e) {
         e.preventDefault();
         api('saveSettings', { longStayNights: $('#ln').value, expenseCategories: $('#cats').value.split('\n') }).then(function (s) {
@@ -882,6 +1211,7 @@
 
   /* ---------- Go ---------- */
 
+  call('branding').then(applyBrand).catch(function () {});
   if (S.token) start(); else showLogin();
 })();
 </script>

@@ -271,13 +271,16 @@ The first time it opens, a box shows three things: the staff ID **admin**, a **t
 
 ## E3. Everyday use
 
-- Each person signs in with their own staff ID and PIN, and presses **Sign out** (top right) when finished. If nobody touches the PC for 20 minutes, the app signs out by itself.
-- **Print summary** for party funds works, and so does **File > Print**.
+- Each person signs in with their own staff ID and PIN (type it, or tap the number pad on screen), and presses **Sign out** (top right) when finished. If nobody touches the PC for 20 minutes, the app signs out by itself.
+- **Reporting a visitor for someone:** type the staff member's name. Names used before are suggested, and their quarter number fills in by itself. The person doesn't need to be on the staff list.
+- **Print reports** (committee): a visitor register, a list of dispute cases, or a money statement for any dates (this month, last month, the school year from April to March, or dates you choose). Press **Print**, or **Save as PDF** to keep or send a copy. Party fund events also have **Print summary** and **Save as PDF**.
+- **Name and logo:** the admin can change the committee name, the school name and the logo in **Staff and settings**. They appear in the header, on the sign-in screen and on printed reports.
 - Bill and ID photos: click **Take photo or upload** and choose a photo saved on the PC (for example, copied from a phone with a USB cable or WhatsApp Desktop).
 - The **View** menu makes the text bigger or smaller (**Ctrl +** and **Ctrl −**).
 
 ## E4. Backups (please do this every week)
 
+- **Reminder:** if no USB backup has been made for 7 days, the admin sees a yellow reminder at the top of the dashboard with a **Back up now** button.
 - **Automatic:** each day the app is opened, it saves a copy of all records on the PC and keeps the last 14 days. These copies don't help if the PC itself breaks.
 - **USB copy, every week:** sign in as admin, then choose **Data > Back up now…** from the menu at the top of the window. Save the file on a USB drive kept by the secretary. The file holds everything, photos included, so keep it private: it has dispute reports in it.
 - **Restore:** sign in as admin, choose **Data > Restore from a backup…** and pick a backup file. Anything entered after that backup is replaced. The app saves a copy of the current records first, just in case.
@@ -308,7 +311,10 @@ Only the admin can make backups, restore or export.
 
 **Removing the app.** Windows **Settings > Apps**, find **SWC Selakui (offline)** and click **Uninstall**. The records are kept on the PC, so installing again brings everything back. To remove the records too, delete the **SWC Selakui** folder in %APPDATA% afterwards, but make a USB backup first.
 
-**Installing a newer version.** Run the new **SWC-Selakui-Offline-Setup.exe**. It replaces the program and keeps all records.
+**Installing a newer version.** Two ways, and both keep all records:
+
+- **Update zip (small, about 100 KB):** sign in as admin, choose **Help > Install update…** (or **Staff and settings > This PC > Install update from zip file**), and pick the file named like **SWC-Update-1.2.0.zip**. Don't unzip it first. The app makes a backup, installs the update and restarts. Only use update files from the committee's own GitHub page or a trusted person.
+- **Full installer:** run the new **SWC-Selakui-Offline-Setup.exe**.
 
 **Mac or Linux.** The offline version is made for Windows. On a Mac, use the Google version in Chrome instead.
 

@@ -25,8 +25,10 @@ rm "$B/payload/resources/default_app.asar" "$B/payload/dxcompiler.dll"   # dxcom
 find "$B/payload/locales" -type f ! -name 'en-US.pak' -delete
 mv "$B/payload/electron.exe" "$B/payload/SWC Selakui.exe"
 node build-ui.js "$WEB" "$B/payload/resources/app"
+# The same app files, as a zip for Help > Install update on PCs that already have the app.
+rm -f "$OUT/SWC-Update-$VERSION.zip"; (cd "$B/payload/resources/app" && zip -qr "$OUT/SWC-Update-$VERSION.zip" .)
 NODE_PATH="$SRC/tools/node_modules" node patch-exe.js "$B/payload/SWC Selakui.exe" "$SRC/swc.ico" "$VERSION"
 
 cp installer.nsi swc.ico "$B/"
 (cd "$B" && makensis -V2 -DVERSION="$VERSION" -DOUTFILE="$OUT/SWC-Selakui-Offline-Setup.exe" installer.nsi)
-echo "Built $OUT/SWC-Selakui-Offline-Setup.exe"
+echo "Built $OUT/SWC-Selakui-Offline-Setup.exe and $OUT/SWC-Update-$VERSION.zip"

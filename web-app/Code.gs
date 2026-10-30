@@ -26,7 +26,10 @@ var SCHEMA = {
 var DEFAULT_SETTINGS = {
   longStayNights: '7',
   expenseCategories: 'Groceries,Meat and fish,Gas and fuel,Decoration,Hall and tent,Transport,Gifts,Other',
-  photoFolderId: ''
+  photoFolderId: '',
+  committeeName: 'Staff Welfare Committee',
+  schoolName: 'TCV School Selakui',
+  logo: ''
 };
 
 var VISITOR_STATUSES = ['To review', 'Approved', 'Not approved', 'Left'];
@@ -135,6 +138,12 @@ function changePin(token, oldPin, newPin) {
 
 /* ---------- Start-up data ---------- */
 
+// Names and logo for the header and the sign-in screen, so no sign-in is needed.
+function branding() {
+  var st = getSettings_();
+  return { committeeName: st.committeeName || DEFAULT_SETTINGS.committeeName, schoolName: st.schoolName || DEFAULT_SETTINGS.schoolName, logo: st.logo || '' };
+}
+
 function bootstrap(token) {
   var u = user_(token);
   var settings = getSettings_();
@@ -143,6 +152,8 @@ function bootstrap(token) {
   return {
     user: publicUser_(u),
     staff: staffList,
+    knownNames: knownNames_(staffList),
+    branding: branding(),
     settings: {
       longStayNights: Number(settings.longStayNights || 7),
       expenseCategories: String(settings.expenseCategories || '').split(',').map(trim_).filter(String)
@@ -152,30 +163,49 @@ function bootstrap(token) {
 }
 
 function dashboard(token) {
-  var u = requireCommittee_(token);
+  requireCommittee_(token);
   var today = today_();
   var visitors = readTable_('Visitors');
-  var staying = visitors.filter(function (v) {
-    return (v.status === 'Approved' || v.status === 'To review') && v.arrival <= today && v.leaving >= today;
-  });
+  var active = function (v) { return v.status === 'Approved' || v.status === 'To review'; };
+  var staying = visitors.filter(function (v) { return active(v) && v.arrival <= today && v.leaving >= today; })
+    .sort(function (a, b) { return a.quarter < b.quarter ? -1 : a.quarter > b.quarter ? 1 : 0; });
+  var overdue = visitors.filter(function (v) { return active(v) && v.leaving < today; })
+    .sort(function (a, b) { return a.leaving < b.leaving ? -1 : 1; });
+  var arriving = visitors.filter(function (v) { return active(v) && v.arrival > today; })
+    .sort(function (a, b) { return a.arrival < b.arrival ? -1 : 1; }).slice(0, 5);
   var quarters = {};
   staying.forEach(function (v) { quarters[v.quarter] = true; });
   var disputes = readTable_('Disputes');
   var open = disputes.filter(function (d) { return d.status === 'Open' || d.status === 'Meeting set'; });
+  var meetings = open.filter(function (d) { return d.meetingDate && d.meetingDate >= today; })
+    .sort(function (a, b) { return a.meetingDate < b.meetingDate ? -1 : 1; });
   var events = readTable_('Events');
-  var nextEvent = events.filter(function (e) { return e.status !== 'Closed'; })
+  var names = {};
+  events.forEach(function (e) { names[e.id] = e.name; });
+  var nextEvent = events.filter(function (e) { return e.status !== 'Closed' && e.date >= today; })
     .sort(function (a, b) { return a.date < b.date ? -1 : 1; })[0] || null;
+  var money = readTable_('Donations').map(function (n) {
+    return { kind: 'donation', date: n.date, what: n.donor, event: names[n.eventId] || '', eventId: n.eventId, amount: money_(n.amount), createdAt: n.createdAt };
+  }).concat(readTable_('Expenses').map(function (x) {
+    return { kind: 'expense', date: x.date, what: x.category + (x.paidBy ? ', paid by ' + x.paidBy : ''), event: names[x.eventId] || '', eventId: x.eventId, amount: money_(x.total), createdAt: x.createdAt };
+  })).sort(byDateDesc_).slice(0, 6);
   var totals = fundTotals_();
   return {
     stayingCount: staying.reduce(function (n, v) { return n + Number(v.count || 1); }, 0),
     stayingQuarters: Object.keys(quarters).length,
     toReview: visitors.filter(function (v) { return v.status === 'To review'; }).length,
     openDisputes: open.length,
-    nextMeeting: open.map(function (d) { return d.meetingDate; }).filter(String).sort()[0] || '',
+    nextMeeting: meetings.length ? meetings[0].meetingDate : '',
     balance: totals.balance,
+    staying: staying,
+    overdue: overdue,
+    arriving: arriving,
     recentVisitors: visitors.sort(byCreatedDesc_).slice(0, 6),
     openDisputesList: open.sort(byCreatedDesc_).slice(0, 4).map(disputeSummary_),
-    nextEvent: nextEvent ? eventSummary_(nextEvent) : null
+    meetings: meetings.slice(0, 5).map(disputeSummary_),
+    nextEvent: nextEvent ? eventSummary_(nextEvent) : null,
+    openEvents: events.filter(function (e) { return e.status !== 'Closed'; }).length,
+    recentMoney: money
   };
 }
 
@@ -184,31 +214,48 @@ function dashboard(token) {
 function saveVisitor(token, data) {
   var u = user_(token);
   var isCommittee = u.role !== 'staff';
-  var staffId = isCommittee && data.staffId ? data.staffId : u.id;
-  var staff = findBy_('Staff', 'id', staffId);
-  if (!staff) throw new Error('Choose the staff member.');
+  var old = data.id ? findBy_('Visitors', 'id', data.id) : null;
+  if (data.id && !old) throw new Error('Report not found.');
+  if (old && !isCommittee && old.staffId !== u.id) throw new Error('You can only change your own reports.');
   required_(data, ['visitorNames', 'relation', 'arrival', 'leaving']);
   if (data.leaving < data.arrival) throw new Error('Leaving date is before the arrival date.');
+  // The committee types the staff member's name; it is linked to a staff account when one matches.
+  var staffId, staffName, quarter;
+  if (isCommittee && (trim_(data.staffName) || data.staffId)) {
+    var s = data.staffId ? findBy_('Staff', 'id', data.staffId) : staffByName_(data.staffName);
+    staffId = s ? s.id : '';
+    staffName = s ? s.name : trim_(data.staffName);
+    quarter = trim_(data.quarter) || (s ? s.quarter : '');
+  } else if (old) {
+    staffId = old.staffId; staffName = old.staffName; quarter = trim_(data.quarter) || old.quarter;
+  } else if (isCommittee) {
+    throw new Error('Type the name of the staff member.');
+  } else {
+    staffId = u.id; staffName = u.name; quarter = trim_(data.quarter) || u.quarter;
+  }
   var rec = {
-    staffId: staff.id, staffName: staff.name, quarter: trim_(data.quarter) || staff.quarter,
+    staffId: staffId, staffName: staffName, quarter: quarter,
     visitorNames: trim_(data.visitorNames), count: String(Math.max(1, Number(data.count) || 1)),
     relation: trim_(data.relation), arrival: data.arrival, leaving: data.leaving,
     nights: String(nightsBetween_(data.arrival, data.leaving)), phone: trim_(data.phone),
     idType: trim_(data.idType), purpose: trim_(data.purpose), updatedAt: now_()
   };
   if (data.photo) rec.photoId = savePhoto_(data.photo, 'ID ' + rec.staffName + ' ' + rec.arrival);
-  if (data.id) {
-    var old = findBy_('Visitors', 'id', data.id);
-    if (!old) throw new Error('Report not found.');
-    if (!isCommittee && old.staffId !== u.id) throw new Error('You can only change your own reports.');
-    update_('Visitors', data.id, rec);
-    return findBy_('Visitors', 'id', data.id);
+  if (old) {
+    update_('Visitors', old.id, rec);
+    return findBy_('Visitors', 'id', old.id);
   }
   rec.id = newId_('V');
   rec.status = 'To review';
   rec.createdAt = now_();
   insert_('Visitors', rec);
   return rec;
+}
+
+function deleteVisitor(token, id) {
+  requireCommittee_(token);
+  remove_('Visitors', id);
+  return true;
 }
 
 function listVisitors(token, filter) {
@@ -392,6 +439,33 @@ function getPhoto(token, fileId) {
   return 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
 }
 
+/* ---------- Reports ---------- */
+
+// Everything the Reports page prints, for one date range (yyyy-MM-dd, both days included).
+function reportData(token, from, to) {
+  requireCommittee_(token);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(from)) || !/^\d{4}-\d{2}-\d{2}$/.test(String(to))) throw new Error('Choose both dates.');
+  if (to < from) throw new Error('The end date is before the start date.');
+  var inRange = function (dt) { dt = String(dt).slice(0, 10); return dt >= from && dt <= to; };
+  var names = {};
+  readTable_('Events').forEach(function (e) { names[e.id] = e.name + ' (' + e.date.split('-').reverse().join('-') + ')'; });
+  var visitors = readTable_('Visitors').filter(function (v) { return v.arrival <= to && v.leaving >= from; })
+    .sort(function (a, b) { return a.arrival === b.arrival ? (a.quarter < b.quarter ? -1 : 1) : (a.arrival < b.arrival ? -1 : 1); });
+  var disputes = readTable_('Disputes').filter(function (d) { return inRange(d.happenedOn) || inRange(d.createdAt); })
+    .sort(function (a, b) { return a.caseNo < b.caseNo ? -1 : 1; })
+    .map(function (d) { var o = disputeSummary_(d); o.involved = d.involved; o.wish = d.wish; o.anonymous = d.anonymous; return o; });
+  var donations = readTable_('Donations').filter(function (n) { return inRange(n.date); })
+    .map(function (n) { n.event = names[n.eventId] || ''; n.amount = money_(n.amount); return n; })
+    .sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+  var expenses = readTable_('Expenses').filter(function (x) { return inRange(x.date); })
+    .map(function (x) {
+      return { id: x.id, date: x.date, eventId: x.eventId, event: names[x.eventId] || '', category: x.category, paidBy: x.paidBy,
+        description: x.description, items: JSON.parse(x.items || '[]'), bills: x.photoIds ? x.photoIds.split(',').length : 0, total: money_(x.total) };
+    })
+    .sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+  return { from: from, to: to, today: today_(), visitors: visitors, disputes: disputes, donations: donations, expenses: expenses };
+}
+
 /* ---------- Staff and settings (admin) ---------- */
 
 function listStaff(token) {
@@ -433,6 +507,14 @@ function saveSettings(token, data) {
   if (data.expenseCategories !== undefined) {
     setSetting_('expenseCategories', data.expenseCategories.map(trim_).filter(String).join(','));
   }
+  if (data.committeeName !== undefined) setSetting_('committeeName', trim_(data.committeeName) || DEFAULT_SETTINGS.committeeName);
+  if (data.schoolName !== undefined) setSetting_('schoolName', trim_(data.schoolName) || DEFAULT_SETTINGS.schoolName);
+  if (data.logo !== undefined) {
+    var logo = String(data.logo || '');
+    // A Google Sheets cell holds 50,000 characters, so the logo is kept small.
+    if (logo && (!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+\/=]+$/.test(logo) || logo.length > 45000)) throw new Error('The logo must be a small picture.');
+    setSetting_('logo', logo);
+  }
   return bootstrap(token).settings;
 }
 
@@ -456,6 +538,23 @@ function requireAdmin_(token) {
   var u = user_(token);
   if (u.role !== 'admin') throw new Error('Only the admin can do this.');
   return u;
+}
+
+function staffByName_(name) {
+  var n = trim_(name).toLowerCase();
+  if (!n) return null;
+  return readTable_('Staff').filter(function (s) { return s.name.trim().toLowerCase() === n; })[0] || null;
+}
+
+// Staff names for the name box: the staff list, plus names typed in earlier visitor reports.
+function knownNames_(staffList) {
+  var byName = {};
+  staffList.forEach(function (s) { byName[s.name.toLowerCase()] = { name: s.name, quarter: s.quarter }; });
+  readTable_('Visitors').sort(byCreatedDesc_).forEach(function (v) {
+    var k = String(v.staffName || '').toLowerCase();
+    if (k && !byName[k]) byName[k] = { name: v.staffName, quarter: v.quarter };
+  });
+  return Object.keys(byName).sort().map(function (k) { return byName[k]; });
 }
 
 function publicUser_(s) {

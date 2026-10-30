@@ -8,6 +8,7 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, shell, session } = require('e
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { createRuntime } = require('./gas-runtime');
 
 const APP_TITLE = 'Staff Welfare Committee, TCV School Selakui';
@@ -56,6 +57,18 @@ async function start() {
     } catch (err) {
       return { ok: false, message: String(err && err.message || err) };
     }
+  });
+
+  ipcMain.handle('swc-info', e => {
+    if (!win || e.sender !== win.webContents) return null;
+    return { version: app.getVersion(), lastBackup: rt.getMeta('lastBackup') || null, dataDir: dataDir() };
+  });
+  ipcMain.handle('swc-action', async (e, name, arg) => {
+    if (!win || e.sender !== win.webContents) return false;
+    if (name === 'backup') return backupNow();
+    if (name === 'pdf') return savePdf(String(arg || 'SWC report'));
+    if (name === 'update') return installUpdate();
+    return false;
   });
 
   createWindow();
@@ -191,19 +204,133 @@ function autoBackup() {
 }
 
 async function backupNow() {
-  if (!requireAdmin()) return;
+  if (!requireAdmin()) return false;
   const s = await dialog.showSaveDialog(win, {
     title: 'Save a backup (a USB drive is best)',
     defaultPath: path.join(app.getPath('documents'), 'SWC backup ' + today() + '.swcbackup'),
     filters: [{ name: 'SWC backup', extensions: ['swcbackup'] }]
   });
-  if (s.canceled || !s.filePath) return;
+  if (s.canceled || !s.filePath) return false;
   try {
     writeBackup(s.filePath);
-    dialog.showMessageBox(win, { type: 'info', message: 'Backup saved.', detail: s.filePath + '\n\nIt holds everything, photos included. Keep it somewhere safe: it has private dispute reports.' });
+    rt.setMeta('lastBackup', new Date().toISOString());
+    await dialog.showMessageBox(win, { type: 'info', message: 'Backup saved.', detail: s.filePath + '\n\nIt holds everything, photos included. Keep it somewhere safe: it has private dispute reports.' });
+    return true;
   } catch (err) {
     dialog.showErrorBox('Backup failed', String(err.message || err));
+    return false;
   }
+}
+
+/* ---------- Save as PDF ---------- */
+
+async function savePdf(name) {
+  const safe = name.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'SWC report';
+  const s = await dialog.showSaveDialog(win, {
+    title: 'Save as PDF', defaultPath: path.join(app.getPath('documents'), safe + '.pdf'),
+    filters: [{ name: 'PDF', extensions: ['pdf'] }]
+  });
+  if (s.canceled || !s.filePath) return false;
+  try {
+    const pdf = await win.webContents.printToPDF({ pageSize: 'A4', printBackground: true, preferCSSPageSize: true });
+    fs.writeFileSync(s.filePath, pdf);
+    shell.openPath(s.filePath);
+    return true;
+  } catch (err) {
+    dialog.showErrorBox('Could not save the PDF', String(err.message || err));
+    return false;
+  }
+}
+
+/* ---------- Updates from a zip file ---------- */
+
+/** Reads the files in a .zip (stored or deflated entries). Returns [{ name, data }]. */
+function readZip(buf) {
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('This is not a zip file.');
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  const out = [];
+  for (let n = 0; n < count; n++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error('The zip file is damaged.');
+    const method = buf.readUInt16LE(p + 10);
+    const size = buf.readUInt32LE(p + 20);
+    const nameLen = buf.readUInt16LE(p + 28), extraLen = buf.readUInt16LE(p + 30), commentLen = buf.readUInt16LE(p + 32);
+    const local = buf.readUInt32LE(p + 42);
+    const name = buf.slice(p + 46, p + 46 + nameLen).toString('utf8').replace(/\\/g, '/');
+    p += 46 + nameLen + extraLen + commentLen;
+    if (name.endsWith('/')) continue;
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    const raw = buf.slice(start, start + size);
+    if (method !== 0 && method !== 8) throw new Error('The zip file uses a packing method the app cannot read.');
+    out.push({ name, data: method === 0 ? raw : zlib.inflateRawSync(raw) });
+  }
+  return out;
+}
+
+function newer(a, b) {
+  const x = a.split('.').map(Number), y = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); }
+  return false;
+}
+
+async function installUpdate() {
+  if (!requireAdmin()) return false;
+  const o = await dialog.showOpenDialog(win, {
+    title: 'Choose the update zip file (for example SWC-Update-1.2.0.zip)', properties: ['openFile'],
+    filters: [{ name: 'SWC update', extensions: ['zip'] }]
+  });
+  if (o.canceled || !o.filePaths.length) return false;
+  let files, pkg, prefix;
+  try {
+    files = readZip(fs.readFileSync(o.filePaths[0]));
+    const pj = files.filter(f => /(^|\/)package\.json$/.test(f.name)).sort((a, b) => a.name.length - b.name.length)[0];
+    if (!pj) throw new Error('This zip is not an SWC update: it has no package.json.');
+    pkg = JSON.parse(pj.data.toString('utf8'));
+    if (pkg.name !== 'swc-selakui') throw new Error('This zip is not an SWC update.');
+    prefix = pj.name.slice(0, pj.name.length - 'package.json'.length);
+    files = files.filter(f => f.name.startsWith(prefix)).map(f => ({ name: f.name.slice(prefix.length), data: f.data }));
+    for (const f of files) {
+      if (f.name.split('/').some(part => part === '..' || part === '') || path.isAbsolute(f.name)) throw new Error('The update has a file in a wrong place: ' + f.name);
+    }
+    for (const need of ['main.js', 'Code.gs', 'ui/index.html']) {
+      if (!files.some(f => f.name === need)) throw new Error('The update is missing ' + need + '.');
+    }
+  } catch (err) {
+    dialog.showErrorBox('Cannot use this update', String(err.message || err));
+    return false;
+  }
+  const current = app.getVersion();
+  const ok = await dialog.showMessageBox(win, {
+    type: newer(pkg.version, current) ? 'question' : 'warning', title: 'Install update',
+    message: 'Install SWC Selakui version ' + pkg.version + '?',
+    detail: 'This PC has version ' + current + '.' + (newer(pkg.version, current) ? '' : ' The update is not newer.') +
+      '\n\nAll records stay as they are. A backup is made first, and the app restarts when the update is in.',
+    buttons: ['Install and restart', 'Cancel'], defaultId: 0, cancelId: 1, noLink: true
+  });
+  if (ok.response !== 0) return false;
+  try {
+    writeBackup(path.join(backupDir(), 'before-update-' + pkg.version + '-' + Date.now() + '.swcbackup'));
+    // Keep the old program files, so a bad update can be undone by copying them back.
+    const keep = path.join(app.getPath('userData'), 'previous-version');
+    fs.rmSync(keep, { recursive: true, force: true });
+    fs.cpSync(__dirname, keep, { recursive: true });
+    for (const f of files) {
+      const target = path.join(__dirname, f.name);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, f.data);
+    }
+  } catch (err) {
+    dialog.showErrorBox('The update could not be installed', String(err.message || err) + '\n\nThe old program files are in ' + path.join(app.getPath('userData'), 'previous-version') + '.');
+    return false;
+  }
+  await dialog.showMessageBox(win, { type: 'info', message: 'Update installed.', detail: 'The app will now restart with version ' + pkg.version + '.' });
+  app.relaunch();
+  app.exit(0);
+  return true;
 }
 
 async function restoreBackup() {
@@ -304,6 +431,7 @@ function buildMenu() {
               ' in the backups folder. Use Data, Back up now, to copy a backup to a USB drive regularly, because the automatic ones are lost if this PC fails.'
           })
         },
+        { label: 'Install update…', click: installUpdate },
         { label: 'Reset admin PIN…', click: resetAdmin },
         { type: 'separator' },
         { label: 'About', click: () => dialog.showMessageBox(win, { type: 'info', message: 'SWC Selakui, offline desktop app', detail: 'Version ' + app.getVersion() + '\nStaff Welfare Committee, TCV School Selakui' }) }
