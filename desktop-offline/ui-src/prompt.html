@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<style>
+  body { margin: 0; padding: 18px 20px; background: #f6f1e8; color: #231b15; font: 15px/1.45 "Segoe UI", system-ui, sans-serif; }
+  p { margin: 0 0 12px; }
+  input { box-sizing: border-box; width: 100%; padding: 9px 10px; font: inherit; font-size: 17px; letter-spacing: 2px; text-transform: uppercase; border: 1px solid #8c7d68; border-radius: 8px; }
+  .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid #8c7d68; background: #fff; cursor: pointer; }
+  button.primary { background: #8b2332; border-color: #8b2332; color: #fff; }
+</style>
+</head>
+<body>
+<form id="f">
+  <p id="label"></p>
+  <input id="v" autocomplete="off" autofocus>
+  <div class="row"><button type="button" id="cancel">Cancel</button><button class="primary" type="submit">OK</button></div>
+</form>
+<script>
+  document.getElementById('label').textContent = new URLSearchParams(location.search).get('label') || '';
+  document.getElementById('f').onsubmit = function (e) { e.preventDefault(); window.swcPrompt.answer(document.getElementById('v').value); };
+  document.getElementById('cancel').onclick = function () { window.swcPrompt.answer(null); };
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') window.swcPrompt.answer(null); });
+</script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Staff Welfare Committee</title>
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <header class="band">
+    <div class="seal" aria-hidden="true">SWC</div>
+    <div class="names">
+      <div class="title">Staff Welfare Committee</div>
+      <div class="sub">TCV School Selakui · <span class="bo" lang="bo">རང་ལས་གཞན་གཅེས།</span></div>
+    </div>
+    <div class="who hidden" id="who">
+      <div id="whoName" style="font-weight:600"></div>
+      <div id="whoDate"></div>
+      <button type="button" id="logoutBtn">Sign out</button>
+    </div>
+  </header>
+  <div id="app"></div>
+  <dialog id="dlg"><div class="dlg" id="dlgBody"></div></dialog>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <?!= include('App'); ?>
+</body>
+</html>

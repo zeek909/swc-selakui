@@ -1,0 +1,36 @@
+<script>
+/* Desktop version: google.script.run is answered by this PC instead of Google. */
+(function () {
+  'use strict';
+  function runner(ok, fail) {
+    return new Proxy({}, {
+      get: function (_, name) {
+        if (name === 'withSuccessHandler') return function (f) { return runner(f, fail); };
+        if (name === 'withFailureHandler') return function (f) { return runner(ok, f); };
+        return function () {
+          window.swcDesktop.call(name, Array.prototype.slice.call(arguments)).then(function (r) {
+            if (r.ok) { if (ok) ok(r.value); } else if (fail) fail(new Error(r.message));
+          }, function (err) { if (fail) fail(err); });
+        };
+      }
+    });
+  }
+  window.google = { script: { run: runner(null, null) } };
+
+  // A shared PC: sign out after 20 minutes with no mouse or keyboard use.
+  var IDLE_MS = 20 * 60 * 1000, last = Date.now();
+  ['mousedown', 'mousemove', 'keydown', 'wheel', 'touchstart'].forEach(function (ev) {
+    window.addEventListener(ev, function () { last = Date.now(); }, { passive: true, capture: true });
+  });
+  setInterval(function () {
+    var token = null;
+    try { token = sessionStorage.getItem('swc_token'); } catch (e) {}
+    if (!token || Date.now() - last < IDLE_MS) return;
+    window.swcDesktop.call('logout', [token]).finally(function () {
+      try { sessionStorage.removeItem('swc_token'); } catch (e) {}
+      location.hash = '#home';
+      location.reload();
+    });
+  }, 30000);
+})();
+</script>

@@ -1,0 +1,887 @@
+<script>
+(function () {
+  'use strict';
+
+  /* ---------- State and server calls ---------- */
+
+  var S = { token: null, user: null, boot: null };
+  try { S.token = sessionStorage.getItem('swc_token'); } catch (e) {}
+
+  function call(fn) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolve, reject) {
+      var runner = google.script.run.withSuccessHandler(resolve).withFailureHandler(function (err) {
+        var msg = (err && err.message) || String(err);
+        if (msg.indexOf('SESSION_EXPIRED') >= 0) { signedOut('Please sign in again.'); return; }
+        reject(new Error(msg));
+      });
+      runner[fn].apply(runner, args);
+    });
+  }
+  function api(fn) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    var seq = routeSeq;
+    return call.apply(null, [fn, S.token].concat(args)).then(function (r) {
+      // A slow answer for a screen the person has already left is dropped.
+      if (seq !== routeSeq) return new Promise(function () {});
+      return r;
+    });
+  }
+
+  /* ---------- Small helpers ---------- */
+
+  var $ = function (sel, root) { return (root || document).querySelector(sel); };
+  var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
+  function esc(v) {
+    return String(v === undefined || v === null ? '' : v).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function d(iso) { if (!iso) return ''; var p = String(iso).slice(0, 10).split('-'); return p.length === 3 ? p[2] + '-' + p[1] + '-' + p[0] : iso; }
+  function rs(n) { return '₹ ' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
+  function num(n) { return Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
+  function nights(a, b) {
+    if (!a || !b) return null;
+    var n = Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000);
+    return isFinite(n) ? n : null;
+  }
+  function stayText(n) { n = Number(n); return n <= 0 ? 'Day visit' : n === 1 ? '1 night' : n + ' nights'; }
+  function badge(status) {
+    var cls = { 'To review': 'b-review', 'Approved': 'b-approved', 'Not approved': 'b-no', 'Left': 'b-left',
+      'Open': 'b-open', 'Meeting set': 'b-meeting', 'Resolved': 'b-resolved', 'Closed': 'b-closed' }[status] || '';
+    return '<span class="badge ' + cls + '">' + esc(status) + '</span>';
+  }
+  function isCommittee() { return S.user && S.user.role !== 'staff'; }
+  function isAdmin() { return S.user && S.user.role === 'admin'; }
+  function today() { return S.boot ? S.boot.today : new Date().toISOString().slice(0, 10); }
+  function formData(form) {
+    var o = {};
+    $$('input, select, textarea', form).forEach(function (el) {
+      if (!el.name) return;
+      if (el.type === 'radio') { if (el.checked) o[el.name] = el.value; }
+      else if (el.type === 'checkbox') { o[el.name] = el.checked; }
+      else if (el.type !== 'file') { o[el.name] = el.value; }
+    });
+    return o;
+  }
+
+  var toastTimer;
+  function toast(msg, isErr) {
+    var t = $('#toast');
+    t.textContent = msg;
+    t.className = 'toast' + (isErr ? ' err' : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = 'toast hidden'; }, isErr ? 6000 : 3500);
+  }
+  function fail(err) { toast(err.message || String(err), true); }
+  function busy(btn, on, label) {
+    if (!btn) return;
+    if (on) { btn.dataset.label = btn.textContent; btn.textContent = label || 'Saving…'; btn.disabled = true; }
+    else { btn.textContent = btn.dataset.label || btn.textContent; btn.disabled = false; }
+  }
+
+  var dlg = $('#dlg');
+  function openDialog(html, wire) {
+    $('#dlgBody').innerHTML = html;
+    if (wire) wire($('#dlgBody'));
+    if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
+  }
+  function closeDialog() { if (dlg.close) dlg.close(); else dlg.removeAttribute('open'); }
+  dlg.addEventListener('click', function (e) { if (e.target === dlg) closeDialog(); });
+
+  /* Photos: shrink on the device before sending, so uploads stay small on school Wi-Fi. */
+  function shrinkImage(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onerror = function () { reject(new Error('Could not read the photo.')); };
+      reader.onload = function () {
+        var img = new Image();
+        img.onerror = function () { reject(new Error('That file is not a photo.')); };
+        img.onload = function () {
+          var max = 1600, w = img.width, h = img.height;
+          if (w > max || h > max) { var r = Math.min(max / w, max / h); w = Math.round(w * r); h = Math.round(h * r); }
+          var c = document.createElement('canvas'); c.width = w; c.height = h;
+          c.getContext('2d').drawImage(img, 0, 0, w, h);
+          resolve(c.toDataURL('image/jpeg', 0.8));
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+  function showPhotos(ids, title) {
+    openDialog('<h2>' + esc(title) + '</h2><div class="gallery" id="gal"><div class="loading">Loading photos…</div></div>' +
+      '<div class="actions"><button class="btn" type="button" data-close>Close</button></div>', function (root) {
+      $('[data-close]', root).onclick = closeDialog;
+      Promise.all(ids.map(function (id) { return api('getPhoto', id); })).then(function (urls) {
+        $('#gal').innerHTML = urls.map(function (u, i) { return '<img alt="Photo ' + (i + 1) + '" src="' + esc(u) + '">'; }).join('');
+      }).catch(fail);
+    });
+  }
+
+  /* ---------- Shell ---------- */
+
+  function navItems() {
+    if (!isCommittee()) return [['home', 'Home'], ['visitor-new', 'Report a visitor'], ['dispute-new', 'Report a dispute'], ['mine', 'My reports'], ['pin', 'Change PIN']];
+    var items = [['home', 'Dashboard'], ['visitors', 'Visitor reports'], ['disputes', 'Disputes'], ['funds', 'Party funds'], ['mine', 'My reports']];
+    if (isAdmin()) items.push(['staff', 'Staff and settings']);
+    items.push(['pin', 'Change PIN']);
+    return items;
+  }
+  function shell() {
+    $('#app').innerHTML = '<div class="layout"><nav class="side" aria-label="Main" id="nav"></nav><main id="view"></main></div>';
+    $('#nav').innerHTML = navItems().map(function (n) { return '<a href="#' + n[0] + '" data-route="' + n[0] + '">' + esc(n[1]) + '</a>'; }).join('') +
+      '<div class="nav-foot" style="flex:1"></div><div class="nav-foot small muted" style="padding:10px 12px">' + (isCommittee() ? 'Committee view' : 'Staff view') + '</div>';
+    $('#who').classList.remove('hidden');
+    $('#whoName').textContent = S.user.name;
+    $('#whoDate').textContent = d(today());
+  }
+  function setActive(route) {
+    $$('#nav a').forEach(function (a) { a.classList.toggle('active', a.dataset.route === route); });
+  }
+  function view(html) {
+    var v = $('#view');
+    if (!v) return document.createElement('div');
+    v.innerHTML = html; window.scrollTo(0, 0); return v;
+  }
+  function loading() { view('<div class="loading">Loading…</div>'); }
+
+  function signedOut(msg) {
+    S.token = null; S.user = null;
+    try { sessionStorage.removeItem('swc_token'); } catch (e) {}
+    $('#who').classList.add('hidden');
+    showLogin(msg);
+  }
+  $('#logoutBtn').onclick = function () { if (S.token) call('logout', S.token); signedOut(); };
+
+  function showLogin(msg) {
+    $('#app').innerHTML = '<div class="login-wrap"><form class="card login stack" id="loginForm">' +
+      '<h1>Sign in</h1><p class="muted" style="margin:0">Use the staff ID and PIN the committee gave you.</p>' +
+      (msg ? '<div class="warn">' + esc(msg) + '</div>' : '') +
+      '<div class="field"><label for="lid">Staff ID</label><input type="text" id="lid" name="id" autocomplete="username" autocapitalize="none" required></div>' +
+      '<div class="field"><label for="lpin">PIN</label><input type="password" id="lpin" name="pin" inputmode="numeric" autocomplete="current-password" required></div>' +
+      '<button class="btn primary big" type="submit">Sign in</button></form></div>';
+    $('#lid').focus();
+    $('#loginForm').onsubmit = function (e) {
+      e.preventDefault();
+      var btn = $('button[type=submit]', e.target); busy(btn, true, 'Signing in…');
+      call('login', $('#lid').value, $('#lpin').value).then(function (r) {
+        S.token = r.token;
+        try { sessionStorage.setItem('swc_token', r.token); } catch (err) {}
+        if (location.hash && location.hash !== '#home') history.replaceState(null, '', location.pathname + location.search + '#home');
+        start();
+      }).catch(function (err) { busy(btn, false); fail(err); });
+    };
+  }
+
+  function start() {
+    $('#app').innerHTML = '<div class="login-wrap"><div class="loading">Loading…</div></div>';
+    api('bootstrap').then(function (b) {
+      S.boot = b; S.user = b.user;
+      shell();
+      if (S.user.mustChange) { location.hash = '#pin'; route(); toast('Please choose your own PIN first.'); return; }
+      route();
+    }).catch(fail);
+  }
+
+  /* ---------- Router ---------- */
+
+  var routes = {};
+  var routeSeq = 0;
+  function route() {
+    if (!S.user) return;
+    var h = (location.hash || '#home').slice(1).split('/');
+    var name = h[0] || 'home';
+    if (S.user.mustChange && name !== 'pin') { location.hash = '#pin'; return; }
+    var fn = routes[name] || routes.home;
+    routeSeq++;
+    setActive(name);
+    fn(h[1], h[2]);
+  }
+  window.addEventListener('hashchange', route);
+  function go(h) { if (location.hash === '#' + h) route(); else location.hash = '#' + h; }
+
+  /* ---------- Home ---------- */
+
+  routes.home = function () {
+    if (!isCommittee()) return staffHome();
+    loading();
+    api('dashboard').then(function (x) {
+      var ev = x.nextEvent;
+      var pct = ev && ev.collected > 0 ? Math.min(100, Math.round(ev.spent / ev.collected * 100)) : 0;
+      view('<h1>Dashboard</h1>' +
+        '<div class="actions"><a class="btn primary big" href="#visitor-new">Report a visitor</a>' +
+        '<a class="btn big" href="#dispute-new">Report a dispute</a>' +
+        '<a class="btn big" href="#funds">Add donation or expense</a></div>' +
+        '<div class="tiles">' +
+        tile('Visitors staying now', x.stayingCount, 'in ' + x.stayingQuarters + (x.stayingQuarters === 1 ? ' quarter' : ' quarters')) +
+        tile('Reports to review', x.toReview, x.toReview ? 'Waiting for committee' : 'All reviewed', x.toReview ? 'var(--warning)' : '') +
+        tile('Open disputes', x.openDisputes, x.nextMeeting ? 'Next meeting ' + d(x.nextMeeting) : 'No meeting set', x.openDisputes ? 'var(--danger)' : '') +
+        tile('Party fund balance', rs(x.balance), 'all events together', x.balance < 0 ? 'var(--danger)' : 'var(--success)') +
+        '</div>' +
+        '<section class="card"><div class="card-head"><h2>Recent visitor reports</h2><a href="#visitors" class="small" style="font-weight:600">See all</a></div>' +
+        visitorTable(x.recentVisitors, false) + '</section>' +
+        '<div class="row"><section class="card"><div class="card-head"><h2>Open disputes</h2><span class="small muted" style="font-weight:600">Committee only</span></div>' +
+        (x.openDisputesList.length ? x.openDisputesList.map(function (c) {
+          return '<a href="#dispute/' + esc(c.id) + '" class="card" style="text-decoration:none;color:inherit;box-shadow:none;gap:4px">' +
+            '<div class="card-head"><span class="mono">Case ' + esc(c.caseNo) + '</span>' + badge(c.status) + '</div>' +
+            '<div>' + esc(c.kind) + (c.place ? ', ' + esc(c.place) : '') + '</div>' +
+            '<div class="small muted">Happened ' + d(c.happenedOn) + (c.meetingDate ? ' · Meeting ' + d(c.meetingDate) : '') + '</div></a>';
+        }).join('') : '<div class="empty">No open disputes.</div>') + '</section>' +
+        '<section class="card"><div class="card-head"><h2>Next event</h2>' + (ev ? '<a href="#event/' + esc(ev.id) + '" class="small" style="font-weight:600">Open</a>' : '') + '</div>' +
+        (ev ? '<div style="font-weight:600">' + esc(ev.name) + ', ' + d(ev.date) + '</div>' +
+          '<div class="card-head"><span>Collected</span><strong>' + rs(ev.collected) + '</strong></div>' +
+          '<div class="bar" aria-hidden="true"><div style="width:' + pct + '%"></div></div>' +
+          '<div class="card-head small muted"><span>Spent so far ' + rs(ev.spent) + '</span><span>' + ev.donationCount + ' donations</span></div>'
+          : '<div class="empty">No upcoming event. <a href="#funds">Create one</a>.</div>') +
+        '</section></div>');
+      wireVisitorRows();
+    }).catch(fail);
+  };
+  function tile(label, n, sub, color) {
+    return '<div class="tile"><div class="label">' + esc(label) + '</div><div class="num"' + (color ? ' style="color:' + color + '"' : '') + '>' + esc(n) +
+      '</div><div class="small muted">' + esc(sub) + '</div></div>';
+  }
+
+  function staffHome() {
+    loading();
+    Promise.all([api('listVisitors', 'all'), api('listDisputes')]).then(function (r) {
+      var current = r[0].filter(function (v) { return v.status !== 'Left' && v.leaving >= today(); });
+      view('<h1>Hello, ' + esc(S.user.name) + '</h1>' +
+        '<div class="actions"><a class="btn primary big" href="#visitor-new">Report a visitor</a><a class="btn big" href="#dispute-new">Report a dispute</a></div>' +
+        '<section class="card"><h2>Your visitors now</h2>' + (current.length ? visitorTable(current, true) : '<div class="empty">No visitors reported for your quarter right now.</div>') + '</section>' +
+        '<section class="card"><h2>Your dispute reports</h2>' + disputeMini(r[1]) + '</section>');
+      wireVisitorRows();
+    }).catch(fail);
+  }
+
+  /* ---------- Visitors ---------- */
+
+  function visitorTable(rows, mine) {
+    if (!rows.length) return '<div class="empty">No visitor reports yet.</div>';
+    return '<div class="table-wrap"><table><thead><tr><th>Arrived</th><th>Quarter</th>' + (mine ? '' : '<th>Staff</th>') +
+      '<th>Visitors</th><th>Relation</th><th>Leaving</th><th>Stay</th><th>Status</th></tr></thead><tbody>' +
+      rows.map(function (v) {
+        return '<tr class="click" data-visitor="' + esc(v.id) + '" tabindex="0"><td>' + d(v.arrival) + '</td><td class="mono">' + esc(v.quarter) + '</td>' +
+          (mine ? '' : '<td>' + esc(v.staffName) + '</td>') +
+          '<td>' + esc(v.visitorNames) + ' <span class="muted">(' + esc(v.count) + ')</span></td><td>' + esc(v.relation) + '</td>' +
+          '<td>' + d(v.leaving) + '</td><td style="font-weight:600">' + stayText(v.nights) + '</td><td>' + badge(v.status) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+  var visitorCache = {};
+  function wireVisitorRows() {
+    $$('[data-visitor]').forEach(function (tr) {
+      var open = function () { visitorDetail(tr.dataset.visitor); };
+      tr.onclick = open;
+      tr.onkeydown = function (e) { if (e.key === 'Enter') open(); };
+    });
+  }
+  function visitorDetail(id) {
+    api('listVisitors', 'all').then(function (rows) {
+      var v = rows.filter(function (x) { return x.id === id; })[0];
+      if (!v) return;
+      var long = Number(v.nights) > S.boot.settings.longStayNights;
+      var mineOnly = !isCommittee();
+      openDialog('<div class="card-head"><h2>Visitor report</h2>' + badge(v.status) + '</div>' +
+        (long ? '<div class="warn">Long stay: more than ' + S.boot.settings.longStayNights + ' nights.</div>' : '') +
+        '<dl class="facts"><dt>Staff</dt><dd>' + esc(v.staffName) + '</dd><dt>Quarter</dt><dd>' + esc(v.quarter) + '</dd>' +
+        '<dt>Visitors</dt><dd>' + esc(v.visitorNames) + ' (' + esc(v.count) + ')</dd><dt>Relation</dt><dd>' + esc(v.relation) + '</dd>' +
+        '<dt>Arrival</dt><dd>' + d(v.arrival) + '</dd><dt>Leaving</dt><dd>' + d(v.leaving) + '</dd><dt>Duration</dt><dd>' + stayText(v.nights) + '</dd>' +
+        '<dt>Phone</dt><dd>' + (esc(v.phone) || '—') + '</dd><dt>ID seen</dt><dd>' + (esc(v.idType) || '—') + '</dd>' +
+        '<dt>Purpose</dt><dd>' + (esc(v.purpose) || '—') + '</dd>' +
+        (v.reviewedBy ? '<dt>Reviewed by</dt><dd>' + esc(v.reviewedBy) + (v.reviewNote ? ': ' + esc(v.reviewNote) : '') + '</dd>' : '') +
+        '</dl>' +
+        (v.photoId ? '<div><button class="btn sm" type="button" data-photo>See ID photo</button></div>' : '') +
+        (mineOnly ? '' : '<div class="field"><label for="rnote">Note (optional)</label><input type="text" id="rnote" placeholder="For example: approved till Sunday"></div>') +
+        '<div class="actions">' +
+        (mineOnly ? '' : '<button class="btn primary" type="button" data-st="Approved">Approve</button><button class="btn danger" type="button" data-st="Not approved">Not approved</button>') +
+        (v.status !== 'Left' ? '<button class="btn" type="button" data-st="Left">Visitor has left</button>' : '') +
+        (v.status !== 'Left' ? '<a class="btn" href="#visitor-edit/' + esc(v.id) + '" data-edit>Change dates</a>' : '') +
+        '<button class="btn ghost" type="button" data-close>Close</button></div>', function (root) {
+        $('[data-close]', root).onclick = closeDialog;
+        var ph = $('[data-photo]', root); if (ph) ph.onclick = function () { showPhotos([v.photoId], 'ID photo'); };
+        var ed = $('[data-edit]', root); if (ed) ed.onclick = function () { visitorCache[v.id] = v; closeDialog(); };
+        $$('[data-st]', root).forEach(function (b) {
+          b.onclick = function () {
+            busy(b, true);
+            api('setVisitorStatus', v.id, b.dataset.st, ($('#rnote', root) || {}).value || '').then(function () {
+              closeDialog(); toast('Saved.'); route();
+            }).catch(function (e) { busy(b, false); fail(e); });
+          };
+        });
+      });
+    }).catch(fail);
+  }
+
+  routes.visitors = function (filter) {
+    filter = filter || 'staying';
+    loading();
+    api('listVisitors', filter).then(function (rows) {
+      var f = [['staying', 'Staying now'], ['review', 'To review'], ['all', 'All reports']];
+      view('<div class="card-head"><h1>Visitor reports</h1><a class="btn primary" href="#visitor-new">Report a visitor</a></div>' +
+        '<div class="chips" role="group" aria-label="Show">' + f.map(function (x) {
+          return '<a class="chip' + (x[0] === filter ? ' on' : '') + '" href="#visitors/' + x[0] + '" style="text-decoration:none;color:inherit">' + x[1] + '</a>';
+        }).join('') + '</div>' +
+        '<section class="card">' + visitorTable(rows, false) + '</section>');
+      $$('.chip.on').forEach(function (c) { c.style.color = 'var(--on-maroon)'; });
+      setActive('visitors');
+      wireVisitorRows();
+    }).catch(fail);
+  };
+
+  var RELATIONS = ['Family', 'Relative', 'Friend', 'Worker or service', 'Other'];
+  var ID_TYPES = ['Aadhaar', 'Voter ID', 'Driving licence', 'Passport', 'RC (Registration Certificate)', 'Other', 'Not seen'];
+
+  routes['visitor-edit'] = function (id) {
+    var v = visitorCache[id];
+    if (!v) { go('home'); return; }
+    visitorForm(v);
+  };
+  routes['visitor-new'] = function () { visitorForm(null); };
+
+  function visitorForm(v) {
+    var me = S.user, staff = S.boot.staff;
+    var editing = !!v;
+    v = v || { arrival: today(), leaving: '', count: '1', relation: '', quarter: me.quarter };
+    var staffPick = isCommittee() && !editing
+      ? '<div class="field"><label for="vstaff">Staff member *</label><select id="vstaff" name="staffId" required><option value="">Choose…</option>' +
+        staff.map(function (s) { return '<option value="' + esc(s.id) + '" data-q="' + esc(s.quarter) + '">' + esc(s.name) + '</option>'; }).join('') + '</select></div>'
+      : '<div class="field"><span class="lbl">Staff member</span><div class="output">' + esc(editing ? v.staffName : me.name) + '</div></div>';
+    var photo = null;
+    view('<h1>' + (editing ? 'Change visitor dates' : 'Report a visitor') + '</h1>' +
+      '<div class="note">Tell the committee when anyone who is not school staff stays in or visits your quarter. Fields marked * are needed.</div>' +
+      '<form class="card stack" id="vform" novalidate>' +
+      '<div class="grid2">' + staffPick +
+      '<div class="field"><label for="vq">Quarter number *</label><input type="text" id="vq" name="quarter" class="mono" value="' + esc(v.quarter) + '" required></div></div>' +
+      '<div class="grid2"><div class="field"><label for="vn">Visitor name(s) *</label><input type="text" id="vn" name="visitorNames" value="' + esc(v.visitorNames) + '" placeholder="Full names" required></div>' +
+      '<div class="field"><label for="vc">How many people *</label><input type="number" id="vc" name="count" min="1" value="' + esc(v.count) + '" required></div></div>' +
+      '<fieldset><legend>Relation to the staff member *</legend><div class="chips">' + RELATIONS.map(function (r) {
+        return '<label class="chip"><input type="radio" name="relation" value="' + esc(r) + '"' + (v.relation === r ? ' checked' : '') + '> ' + esc(r) + '</label>';
+      }).join('') + '</div></fieldset>' +
+      '<div class="grid3"><div class="field"><label for="va">Arrival date *</label><input type="date" id="va" name="arrival" value="' + esc(v.arrival) + '" required></div>' +
+      '<div class="field"><label for="vl">Expected to leave *</label><input type="date" id="vl" name="leaving" value="' + esc(v.leaving) + '" required></div>' +
+      '<div class="field"><span class="lbl">Duration of stay</span><output class="output" id="vdur" aria-live="polite">—</output></div></div>' +
+      '<div id="vlong" class="warn hidden"></div>' +
+      '<div class="grid2"><div class="field"><label for="vp">Visitor phone</label><input type="tel" id="vp" name="phone" value="' + esc(v.phone) + '" placeholder="Optional"></div>' +
+      '<div class="field"><label for="vi">ID seen</label><select id="vi" name="idType"><option value="">Choose…</option>' + ID_TYPES.map(function (t) {
+        return '<option' + (v.idType === t ? ' selected' : '') + '>' + esc(t) + '</option>';
+      }).join('') + '</select></div></div>' +
+      '<div class="field"><label for="vpu">Purpose of visit</label><textarea id="vpu" name="purpose" placeholder="For example: parents visiting for the holidays">' + esc(v.purpose) + '</textarea></div>' +
+      (editing ? '' : '<div class="field"><span class="lbl">Photo of ID (optional)</span><div class="photos" id="vphotos"></div>' +
+        '<input type="file" id="vfile" accept="image/*" capture="environment" class="hidden"></div>') +
+      '<div class="actions"><a class="btn" href="#home">Cancel</a><button class="btn primary big" type="submit">' + (editing ? 'Save changes' : 'Send to committee') + '</button></div>' +
+      '</form>');
+
+    var sel = $('#vstaff');
+    if (sel) sel.onchange = function () { var o = sel.options[sel.selectedIndex]; if (o && o.dataset.q) $('#vq').value = o.dataset.q; };
+    function dur() {
+      var n = nights($('#va').value, $('#vl').value);
+      var out = $('#vdur'), warn = $('#vlong');
+      if (n === null) { out.textContent = '—'; warn.classList.add('hidden'); return; }
+      if (n < 0) { out.textContent = 'Check the dates'; warn.textContent = 'Leaving date is before the arrival date.'; warn.classList.remove('hidden'); return; }
+      out.textContent = stayText(n);
+      var lim = S.boot.settings.longStayNights;
+      if (n > lim) { warn.textContent = 'This is longer than ' + lim + ' nights. The committee needs to approve long stays.'; warn.classList.remove('hidden'); }
+      else warn.classList.add('hidden');
+    }
+    $('#va').oninput = dur; $('#vl').oninput = dur; dur();
+
+    function drawPhoto() {
+      var box = $('#vphotos'); if (!box) return;
+      box.innerHTML = (photo ? '<div class="thumb"><img alt="ID photo" src="' + photo + '"><button type="button" aria-label="Remove photo" data-rm>×</button></div>' : '') +
+        (photo ? '' : '<button type="button" class="add-photo" data-add>Take photo or choose file</button>');
+      var rm = $('[data-rm]', box); if (rm) rm.onclick = function () { photo = null; drawPhoto(); };
+      var add = $('[data-add]', box); if (add) add.onclick = function () { $('#vfile').click(); };
+    }
+    if ($('#vfile')) {
+      $('#vfile').onchange = function (e) {
+        var f = e.target.files[0]; if (!f) return;
+        shrinkImage(f).then(function (u) { photo = u; drawPhoto(); }).catch(fail);
+        e.target.value = '';
+      };
+      drawPhoto();
+    }
+
+    $('#vform').onsubmit = function (e) {
+      e.preventDefault();
+      var data = formData(e.target);
+      if (isCommittee() && !editing && !data.staffId) return fail(new Error('Choose the staff member.'));
+      if (!data.visitorNames || !data.relation || !data.arrival || !data.leaving) return fail(new Error('Please fill in the fields marked *.'));
+      if (editing) { data.id = v.id; data.staffId = v.staffId; }
+      if (photo) data.photo = photo;
+      var btn = $('button[type=submit]', e.target); busy(btn, true, 'Sending…');
+      api('saveVisitor', data).then(function () {
+        toast(editing ? 'Dates updated.' : 'Sent. The committee will review it.');
+        go(isCommittee() ? 'visitors' : 'home');
+      }).catch(function (err) { busy(btn, false); fail(err); });
+    };
+  }
+
+  /* ---------- Disputes ---------- */
+
+  var KINDS = ['Noise', 'Shared space', 'Water or electricity', 'Children', 'Words or behaviour', 'Other'];
+  var WISHES = ['Just keep a record', 'Talk to them', 'Hold a meeting'];
+
+  routes['dispute-new'] = function () {
+    var involved = [];
+    view('<h1>Report a dispute</h1>' +
+      '<div class="note"><strong style="color:var(--ink)">Private to the committee.</strong> Only SWC committee members can read this report. The people named will not see who sent it.</div>' +
+      '<form class="card stack" id="dform" novalidate>' +
+      '<label class="check"><input type="checkbox" name="anonymous"> Send without my name (anonymous)</label>' +
+      '<div class="field"><label for="dwho">Who is involved *</label>' +
+      '<div class="actions" style="flex-wrap:nowrap"><input type="text" id="dwho" list="staffNames" placeholder="Type a name, then Add"><button class="btn" type="button" id="dadd">Add</button></div>' +
+      '<datalist id="staffNames">' + S.boot.staff.map(function (s) { return '<option value="' + esc(s.name) + '">'; }).join('') + '</datalist>' +
+      '<div class="chips" id="dtags"></div></div>' +
+      '<fieldset><legend>What is it about *</legend><div class="chips">' + KINDS.map(function (k) {
+        return '<label class="chip"><input type="radio" name="kind" value="' + esc(k) + '"> ' + esc(k) + '</label>';
+      }).join('') + '</div></fieldset>' +
+      '<div class="grid2"><div class="field"><label for="dwhen">When did it happen *</label><input type="date" id="dwhen" name="happenedOn" value="' + today() + '"></div>' +
+      '<div class="field"><label for="dwhere">Where</label><input type="text" id="dwhere" name="place" placeholder="For example: Block B corridor"></div></div>' +
+      '<div class="field"><label for="dwhat">What happened *</label><textarea id="dwhat" name="details" rows="5" placeholder="Describe what happened, in your own words."></textarea></div>' +
+      '<fieldset><legend>What would you like the committee to do</legend><div class="chips">' + WISHES.map(function (k) {
+        return '<label class="chip"><input type="radio" name="wish" value="' + esc(k) + '"> ' + esc(k) + '</label>';
+      }).join('') + '</div></fieldset>' +
+      '<div class="actions"><a class="btn" href="#home">Cancel</a><button class="btn primary big" type="submit">Send privately to committee</button></div></form>');
+    function drawTags() {
+      $('#dtags').innerHTML = involved.map(function (n, i) { return '<span class="tag">' + esc(n) + '<button type="button" aria-label="Remove ' + esc(n) + '" data-i="' + i + '">×</button></span>'; }).join('');
+      $$('#dtags [data-i]').forEach(function (b) { b.onclick = function () { involved.splice(Number(b.dataset.i), 1); drawTags(); }; });
+    }
+    function addWho() { var n = $('#dwho').value.trim(); if (n && involved.indexOf(n) < 0) involved.push(n); $('#dwho').value = ''; drawTags(); }
+    $('#dadd').onclick = addWho;
+    $('#dwho').onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); addWho(); } };
+    $('#dform').onsubmit = function (e) {
+      e.preventDefault();
+      if ($('#dwho').value.trim()) addWho();
+      var data = formData(e.target);
+      data.involved = involved.join(', ');
+      if (!data.involved || !data.kind || !data.happenedOn || !data.details) return fail(new Error('Please fill in the fields marked *.'));
+      var btn = $('button[type=submit]', e.target); busy(btn, true, 'Sending…');
+      api('saveDispute', data).then(function (r) {
+        toast('Sent privately. Case ' + r.caseNo + '.');
+        go(isCommittee() ? 'disputes' : 'mine');
+      }).catch(function (err) { busy(btn, false); fail(err); });
+    };
+  };
+
+  function disputeMini(rows) {
+    if (!rows.length) return '<div class="empty">You have not sent any dispute reports. Anonymous reports are not listed here.</div>';
+    return '<div class="table-wrap"><table><thead><tr><th>Case</th><th>About</th><th>Sent</th><th>Status</th><th>Meeting</th></tr></thead><tbody>' +
+      rows.map(function (c) {
+        return '<tr><td class="mono">' + esc(c.caseNo) + '</td><td>' + esc(c.kind) + '</td><td>' + d(c.createdAt) + '</td><td>' + badge(c.status) + '</td><td>' + (d(c.meetingDate) || '—') + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  routes.disputes = function () {
+    loading();
+    api('listDisputes').then(function (rows) {
+      view('<div class="card-head"><h1>Disputes</h1><a class="btn primary" href="#dispute-new">Report a dispute</a></div>' +
+        '<div class="note">Committee only. Open a case to see the people involved and the full report.</div>' +
+        '<section class="card">' + (rows.length ? '<div class="table-wrap"><table><thead><tr><th>Case</th><th>About</th><th>Where</th><th>Happened</th><th>Status</th><th>Meeting</th></tr></thead><tbody>' +
+        rows.map(function (c) {
+          return '<tr class="click" tabindex="0" data-case="' + esc(c.id) + '"><td class="mono">' + esc(c.caseNo) + '</td><td>' + esc(c.kind) + '</td><td>' + (esc(c.place) || '—') + '</td>' +
+            '<td>' + d(c.happenedOn) + '</td><td>' + badge(c.status) + '</td><td>' + (d(c.meetingDate) || '—') + '</td></tr>';
+        }).join('') + '</tbody></table></div>' : '<div class="empty">No disputes reported.</div>') + '</section>');
+      $$('[data-case]').forEach(function (tr) {
+        tr.onclick = function () { go('dispute/' + tr.dataset.case); };
+        tr.onkeydown = function (e) { if (e.key === 'Enter') go('dispute/' + tr.dataset.case); };
+      });
+    }).catch(fail);
+  };
+
+  routes.dispute = function (id) {
+    setActive('disputes');
+    loading();
+    api('getDispute', id).then(drawCase).catch(fail);
+    function drawCase(c) {
+      view('<div class="actions"><a href="#disputes" class="btn ghost">← All disputes</a></div>' +
+        '<div class="card-head"><h1>Case ' + esc(c.caseNo) + '</h1>' + badge(c.status) + '</div>' +
+        '<div class="row"><section class="card"><h2>Report</h2><dl class="facts">' +
+        '<dt>Reported by</dt><dd>' + esc(c.reporterName) + '</dd><dt>Sent on</dt><dd>' + d(c.createdAt) + '</dd>' +
+        '<dt>People involved</dt><dd>' + esc(c.involved) + '</dd><dt>About</dt><dd>' + esc(c.kind) + '</dd>' +
+        '<dt>Happened</dt><dd>' + d(c.happenedOn) + '</dd><dt>Where</dt><dd>' + (esc(c.place) || '—') + '</dd>' +
+        '<dt>Wants</dt><dd>' + (esc(c.wish) || '—') + '</dd><dt>What happened</dt><dd>' + esc(c.details) + '</dd></dl></section>' +
+        '<section class="card"><h2>Committee action</h2><form class="stack" id="cform">' +
+        '<div class="grid2"><div class="field"><label for="cst">Status</label><select id="cst" name="status">' +
+        ['Open', 'Meeting set', 'Resolved', 'Closed'].map(function (s) { return '<option' + (s === c.status ? ' selected' : '') + '>' + s + '</option>'; }).join('') + '</select></div>' +
+        '<div class="field"><label for="cmd">Meeting date</label><input type="date" id="cmd" name="meetingDate" value="' + esc(c.meetingDate) + '"></div></div>' +
+        '<div class="field"><label for="cnote">Add a note</label><textarea id="cnote" name="note" rows="3" placeholder="What was discussed or agreed"></textarea></div>' +
+        '<div class="actions"><button class="btn primary" type="submit">Save</button></div></form>' +
+        '<h2>History</h2><div class="log">' + (c.log.length ? c.log.slice().reverse().map(function (l) {
+          return '<div class="entry"><div class="small muted">' + d(l.at) + ' · ' + esc(l.by) + '</div>' + esc(l.text) + '</div>';
+        }).join('') : '<div class="empty">Nothing recorded yet.</div>') + '</div></section></div>');
+      $('#cform').onsubmit = function (e) {
+        e.preventDefault();
+        var btn = $('button[type=submit]', e.target); busy(btn, true);
+        api('updateDispute', c.id, formData(e.target)).then(function (n) { toast('Saved.'); drawCase(n); }).catch(function (err) { busy(btn, false); fail(err); });
+      };
+    }
+  };
+
+  /* ---------- My reports ---------- */
+
+  routes.mine = function () {
+    loading();
+    Promise.all([api('listVisitors', 'mine'), api('listDisputes')]).then(function (r) {
+      var visitors = isCommittee() ? r[0].filter(function (v) { return v.staffId === S.user.id; }) : r[0];
+      var disputes = isCommittee() ? [] : r[1];
+      view('<h1>My reports</h1><section class="card"><h2>Visitor reports</h2>' + visitorTable(visitors, true) + '</section>' +
+        (isCommittee() ? '' : '<section class="card"><h2>Dispute reports</h2>' + disputeMini(disputes) + '</section>'));
+      wireVisitorRows();
+    }).catch(fail);
+  };
+
+  /* ---------- Party funds ---------- */
+
+  routes.funds = function () {
+    loading();
+    api('listEvents').then(function (x) {
+      view('<h1>Party funds</h1>' +
+        '<div class="tiles">' + tile('Collected, all events', rs(x.collected), 'donations') + tile('Spent, all events', rs(x.spent), 'expenses') +
+        tile('Balance', rs(x.balance), 'money in hand', x.balance < 0 ? 'var(--danger)' : 'var(--success)') + '</div>' +
+        '<section class="card"><h2>New event</h2><form class="grid3" id="eform" style="align-items:end">' +
+        '<div class="field"><label for="en">Event name *</label><input type="text" id="en" name="name" placeholder="For example: Losar staff dinner"></div>' +
+        '<div class="field"><label for="ed">Date *</label><input type="date" id="ed" name="date"></div>' +
+        '<div><button class="btn primary" type="submit" style="width:100%">Create event</button></div></form></section>' +
+        '<section class="card"><h2>Events</h2>' + (x.events.length ? '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Event</th><th class="num">Collected</th><th class="num">Spent</th><th class="num">Balance</th><th>Status</th></tr></thead><tbody>' +
+        x.events.map(function (e) {
+          return '<tr class="click" tabindex="0" data-ev="' + esc(e.id) + '"><td>' + d(e.date) + '</td><td style="font-weight:600">' + esc(e.name) + '</td>' +
+            '<td class="num">' + num(e.collected) + '</td><td class="num">' + num(e.spent) + '</td><td class="num">' + num(e.balance) + '</td>' +
+            '<td>' + (e.status === 'Closed' ? badge('Closed') : '<span class="badge b-approved">Open</span>') + '</td></tr>';
+        }).join('') + '</tbody></table></div>' : '<div class="empty">No events yet. Create the first one above.</div>') + '</section>');
+      $$('[data-ev]').forEach(function (tr) {
+        tr.onclick = function () { go('event/' + tr.dataset.ev); };
+        tr.onkeydown = function (e) { if (e.key === 'Enter') go('event/' + tr.dataset.ev); };
+      });
+      $('#eform').onsubmit = function (e) {
+        e.preventDefault();
+        var data = formData(e.target);
+        if (!data.name || !data.date) return fail(new Error('Give the event a name and a date.'));
+        api('saveEvent', data).then(function (ev) { toast('Event created.'); go('event/' + ev.id); }).catch(fail);
+      };
+    }).catch(fail);
+  };
+
+  routes.event = function (id) {
+    setActive('funds');
+    loading();
+    api('getEvent', id).then(function (e) {
+      var closed = e.status === 'Closed';
+      view('<div class="actions no-print"><a href="#funds" class="btn ghost">← All events</a></div>' +
+        '<div class="card-head"><div><h1>' + esc(e.name) + '</h1><div class="muted">' + d(e.date) + (closed ? ' · Closed' : '') + '</div></div>' +
+        '<div class="actions no-print">' + (closed ? '' : '<button class="btn primary" type="button" id="addDon">Add donation</button><a class="btn" href="#expense-new/' + esc(e.id) + '">Add expense</a>') +
+        '<button class="btn" type="button" id="printBtn">Print summary</button>' +
+        '<button class="btn ghost" type="button" id="closeBtn">' + (closed ? 'Reopen event' : 'Close event') + '</button></div></div>' +
+        '<div class="tiles">' + tile('Collected', rs(e.collected), e.donationCount + (e.donationCount === 1 ? ' donation' : ' donations')) +
+        tile('Spent', rs(e.spent), e.expenseCount + (e.expenseCount === 1 ? ' expense, ' : ' expenses, ') + e.expensesWithBills + ' with bills') +
+        tile('Balance for this event', rs(e.balance), closed ? 'Event closed' : 'So far', e.balance < 0 ? 'var(--danger)' : 'var(--success)') + '</div>' +
+        '<div class="row" style="align-items:flex-start"><section class="card"><h2>Donations</h2>' +
+        (e.donations.length ? '<div class="table-wrap"><table><thead><tr><th>Date</th><th>From</th><th>Mode</th><th class="num">Amount</th><th class="no-print"></th></tr></thead><tbody>' +
+          e.donations.map(function (n) {
+            return '<tr><td>' + d(n.date) + '</td><td>' + esc(n.donor) + (n.note ? '<div class="small muted">' + esc(n.note) + '</div>' : '') + '</td><td>' + esc(n.mode) + '</td>' +
+              '<td class="num">' + num(n.amount) + '</td><td class="no-print">' + (closed ? '' : '<button class="btn sm ghost danger" type="button" data-del="donation" data-id="' + esc(n.id) + '" aria-label="Delete donation">Delete</button>') + '</td></tr>';
+          }).join('') + '</tbody></table></div>' : '<div class="empty">No donations yet.</div>') + '</section>' +
+        '<section class="card"><h2>Expenses</h2>' +
+        (e.expenses.length ? '<div class="table-wrap"><table><thead><tr><th>Date</th><th>What</th><th>Bills</th><th class="num">Amount</th><th class="no-print"></th></tr></thead><tbody>' +
+          e.expenses.map(function (x, i) {
+            return '<tr><td>' + d(x.date) + '</td><td><button class="btn sm ghost" type="button" data-items="' + i + '" style="padding:0;min-height:0;text-align:left">' + esc(x.category) +
+              ' · ' + x.items.length + (x.items.length === 1 ? ' item' : ' items') + '</button><div class="small muted">Paid by ' + esc(x.paidBy) + '</div></td>' +
+              '<td>' + (x.photoIds.length ? '<button class="btn sm ghost" type="button" data-bills="' + i + '" style="padding:0;min-height:0">' + x.photoIds.length + (x.photoIds.length === 1 ? ' photo' : ' photos') + '</button>'
+                : '<span style="color:var(--warning);font-weight:600;font-size:13px">Missing</span>') + '</td>' +
+              '<td class="num">' + num(x.total) + '</td><td class="no-print">' + (closed ? '' : '<button class="btn sm ghost danger" type="button" data-del="expense" data-id="' + esc(x.id) + '" aria-label="Delete expense">Delete</button>') + '</td></tr>';
+          }).join('') + '</tbody></table></div>' : '<div class="empty">No expenses yet.</div>') + '</section></div>' +
+        '<div class="small muted">Every entry records who added it and when.</div>');
+
+      $('#printBtn').onclick = function () { window.print(); };
+      $('#closeBtn').onclick = function () {
+        api('saveEvent', { id: e.id, name: e.name, date: e.date, status: closed ? 'Open' : 'Closed' }).then(function () { route(); }).catch(fail);
+      };
+      var addDon = $('#addDon'); if (addDon) addDon.onclick = function () { donationDialog(e); };
+      $$('[data-bills]').forEach(function (b) { b.onclick = function () { var x = e.expenses[Number(b.dataset.bills)]; showPhotos(x.photoIds, 'Bills: ' + x.category + ', ' + d(x.date)); }; });
+      $$('[data-items]').forEach(function (b) { b.onclick = function () { expenseDetail(e.expenses[Number(b.dataset.items)]); }; });
+      $$('[data-del]').forEach(function (b) {
+        b.onclick = function () {
+          if (!confirm('Delete this ' + b.dataset.del + '? This cannot be undone.')) return;
+          api('deleteEntry', b.dataset.del, b.dataset.id).then(function () { toast('Deleted.'); route(); }).catch(fail);
+        };
+      });
+    }).catch(fail);
+  };
+
+  function expenseDetail(x) {
+    openDialog('<h2>' + esc(x.category) + ', ' + d(x.date) + '</h2><div class="muted">Paid by ' + esc(x.paidBy) + ' · added by ' + esc(x.addedBy) + '</div>' +
+      (x.description ? '<div>' + esc(x.description) + '</div>' : '') +
+      '<div class="table-wrap"><table><thead><tr><th>Item</th><th>Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>' +
+      x.items.map(function (it) {
+        return '<tr><td>' + esc(it.item) + '</td><td>' + esc(it.qty) + ' ' + esc(it.unit) + '</td><td class="num">' + num(it.rate) + '</td><td class="num">' + num(it.amount) + '</td></tr>';
+      }).join('') + '<tr><td colspan="3" style="font-weight:600">Total</td><td class="num" style="font-weight:600">' + num(x.total) + '</td></tr></tbody></table></div>' +
+      '<div class="actions">' + (x.photoIds.length ? '<button class="btn" type="button" data-b>See bills</button>' : '') + '<button class="btn ghost" type="button" data-close>Close</button></div>', function (root) {
+      $('[data-close]', root).onclick = closeDialog;
+      var b = $('[data-b]', root); if (b) b.onclick = function () { showPhotos(x.photoIds, 'Bills'); };
+    });
+  }
+
+  function donationDialog(e) {
+    openDialog('<h2>Add donation</h2><div class="muted">' + esc(e.name) + '</div><form class="stack" id="nform" novalidate>' +
+      '<div class="grid2"><div class="field"><label for="nd">Date *</label><input type="date" id="nd" name="date" value="' + today() + '"></div>' +
+      '<div class="field"><label for="na">Amount (₹) *</label><input type="number" id="na" name="amount" min="1" step="any" inputmode="decimal"></div></div>' +
+      '<div class="field"><label for="nf">From *</label><input type="text" id="nf" name="donor" list="donorNames" placeholder="Staff name or well-wisher">' +
+      '<datalist id="donorNames">' + S.boot.staff.map(function (s) { return '<option value="' + esc(s.name) + '">'; }).join('') + '</datalist></div>' +
+      '<fieldset><legend>Paid by</legend><div class="chips">' + ['Cash', 'UPI', 'Bank transfer', 'Salary deduction'].map(function (m, i) {
+        return '<label class="chip"><input type="radio" name="mode" value="' + m + '"' + (i === 0 ? ' checked' : '') + '> ' + m + '</label>';
+      }).join('') + '</div></fieldset>' +
+      '<div class="field"><label for="nn">Note</label><input type="text" id="nn" name="note" placeholder="Optional, for example a UPI reference"></div>' +
+      '<div class="actions"><button class="btn ghost" type="button" data-close>Cancel</button><button class="btn primary" type="submit">Save donation</button><label class="small muted"><input type="checkbox" id="nmore"> Add another after this</label></div></form>', function (root) {
+      $('[data-close]', root).onclick = closeDialog;
+      $('#nf').focus();
+      $('#nform').onsubmit = function (ev) {
+        ev.preventDefault();
+        var data = formData(ev.target); data.eventId = e.id;
+        if (!data.donor || !(Number(data.amount) > 0)) return fail(new Error('Fill in who gave it and the amount.'));
+        var btn = $('button[type=submit]', ev.target); busy(btn, true);
+        api('saveDonation', data).then(function () {
+          toast('Donation of ' + rs(data.amount) + ' saved.');
+          if ($('#nmore').checked) { busy(btn, false); $('#na').value = ''; $('#nf').value = ''; $('#nn').value = ''; $('#nf').focus(); route(); }
+          else { closeDialog(); route(); }
+        }).catch(function (err) { busy(btn, false); fail(err); });
+      };
+    });
+  }
+
+  /* Add expense: item lines, bill photos and a calculator. */
+  routes['expense-new'] = function (eventId) {
+    setActive('funds');
+    loading();
+    api('getEvent', eventId).then(function (e) {
+      var items = [{ item: '', qty: '1', unit: '', rate: '' }];
+      var photos = [];
+      var lastField = null;
+      view('<div class="actions"><a href="#event/' + esc(e.id) + '" class="btn ghost">← ' + esc(e.name) + '</a></div><h1>Add expense</h1>' +
+        '<div class="expense-layout"><form class="stack" id="xform" novalidate>' +
+        '<div class="card stack"><div class="grid3"><div class="field"><label for="xd">Date *</label><input type="date" id="xd" name="date" value="' + today() + '"></div>' +
+        '<div class="field"><label for="xc">Category *</label><select id="xc" name="category">' + S.boot.settings.expenseCategories.map(function (c) { return '<option>' + esc(c) + '</option>'; }).join('') + '</select></div>' +
+        '<div class="field"><label for="xp">Paid by *</label><input type="text" id="xp" name="paidBy" list="payers" value="' + esc(S.user.name) + '">' +
+        '<datalist id="payers">' + S.boot.staff.map(function (s) { return '<option value="' + esc(s.name) + '">'; }).join('') + '</datalist></div></div>' +
+        '<div class="field"><label for="xs">Shop or note</label><input type="text" id="xs" name="description" placeholder="Optional, for example the shop name"></div></div>' +
+        '<section class="card"><h2>Items on the bill</h2><div class="table-wrap"><table class="items"><thead><tr><th>Item</th><th style="width:90px">Qty</th><th style="width:90px">Unit</th><th style="width:110px">Rate (₹)</th><th class="num" style="width:110px">Amount</th><th style="width:44px"></th></tr></thead>' +
+        '<tbody id="xitems"></tbody></table></div>' +
+        '<div class="card-head"><button class="btn sm" type="button" id="xadd">+ Add item</button><div class="total" id="xtotal">Total ₹ 0</div></div></section>' +
+        '<section class="card"><h2>Bill photos</h2><div class="small muted">Take a photo of each bill, or choose photos already on this device.</div><div class="photos" id="xphotos"></div>' +
+        '<input type="file" id="xfile" accept="image/*" capture="environment" multiple class="hidden"></section>' +
+        '<div class="actions"><a class="btn" href="#event/' + esc(e.id) + '">Cancel</a><button class="btn primary big" type="submit" id="xsave">Save expense</button></div></form>' +
+        calculatorHtml() + '</div>');
+
+      function line(it, i) {
+        var amt = (Number(it.qty) || 0) * (Number(it.rate) || 0);
+        return '<tr data-i="' + i + '"><td><input type="text" aria-label="Item ' + (i + 1) + '" data-k="item" value="' + esc(it.item) + '" placeholder="For example: Rice"></td>' +
+          '<td><input type="number" aria-label="Quantity" data-k="qty" min="0" step="any" inputmode="decimal" value="' + esc(it.qty) + '"></td>' +
+          '<td><input type="text" aria-label="Unit" data-k="unit" value="' + esc(it.unit) + '" placeholder="kg"></td>' +
+          '<td><input type="number" aria-label="Rate" data-k="rate" min="0" step="any" inputmode="decimal" value="' + esc(it.rate) + '"></td>' +
+          '<td class="amt" data-amt>' + num(amt) + '</td>' +
+          '<td><button class="btn sm ghost danger" type="button" data-rm aria-label="Remove item ' + (i + 1) + '">×</button></td></tr>';
+      }
+      function total() { return items.reduce(function (n, it) { return n + (Number(it.qty) || 0) * (Number(it.rate) || 0); }, 0); }
+      function drawTotal() { $('#xtotal').textContent = 'Total ' + rs(total()); $('#xsave').textContent = 'Save expense · ' + rs(total()); }
+      function drawItems() {
+        $('#xitems').innerHTML = items.map(line).join('');
+        $$('#xitems tr').forEach(function (tr) {
+          var i = Number(tr.dataset.i);
+          $$('input', tr).forEach(function (inp) {
+            inp.addEventListener('input', function () {
+              items[i][inp.dataset.k] = inp.value;
+              $('[data-amt]', tr).textContent = num((Number(items[i].qty) || 0) * (Number(items[i].rate) || 0));
+              drawTotal();
+            });
+            inp.addEventListener('focus', function () { if (inp.type === 'number') lastField = inp; });
+          });
+          $('[data-rm]', tr).onclick = function () { items.splice(i, 1); if (!items.length) items.push({ item: '', qty: '1', unit: '', rate: '' }); drawItems(); };
+        });
+        drawTotal();
+      }
+      $('#xadd').onclick = function () { items.push({ item: '', qty: '1', unit: '', rate: '' }); drawItems(); $('#xitems tr:last-child input').focus(); };
+      drawItems();
+
+      function drawPhotos() {
+        $('#xphotos').innerHTML = photos.map(function (p, i) {
+          return '<div class="thumb"><img alt="Bill ' + (i + 1) + '" src="' + p + '"><button type="button" aria-label="Remove bill ' + (i + 1) + '" data-p="' + i + '">×</button></div>';
+        }).join('') + '<button type="button" class="add-photo" id="xaddp">Take photo or upload</button>';
+        $$('#xphotos [data-p]').forEach(function (b) { b.onclick = function () { photos.splice(Number(b.dataset.p), 1); drawPhotos(); }; });
+        $('#xaddp').onclick = function () { $('#xfile').click(); };
+      }
+      $('#xfile').onchange = function (ev) {
+        var files = Array.prototype.slice.call(ev.target.files);
+        if (photos.length + files.length > 6) { fail(new Error('Up to 6 bill photos per expense.')); files = files.slice(0, Math.max(0, 6 - photos.length)); }
+        Promise.all(files.map(shrinkImage)).then(function (urls) { photos = photos.concat(urls); drawPhotos(); }).catch(fail);
+        ev.target.value = '';
+      };
+      drawPhotos();
+
+      wireCalculator(function (value) {
+        if (!lastField) { toast('Tap a Qty or Rate box first, then press "Put in box".'); return; }
+        lastField.value = value;
+        lastField.dispatchEvent(new Event('input'));
+        lastField.focus();
+      });
+
+      $('#xform').onsubmit = function (ev) {
+        ev.preventDefault();
+        var data = formData(ev.target);
+        data.eventId = e.id;
+        data.items = items.filter(function (it) { return it.item.trim(); });
+        data.photos = photos;
+        if (!data.items.length || !(total() > 0)) return fail(new Error('Add at least one item with a rate.'));
+        if (!photos.length && !confirm('No bill photo added. Save anyway?')) return;
+        var btn = $('#xsave'); busy(btn, true, photos.length ? 'Uploading bills…' : 'Saving…');
+        api('saveExpense', data).then(function () { toast('Expense saved.'); go('event/' + e.id); }).catch(function (err) { busy(btn, false); fail(err); });
+      };
+    }).catch(fail);
+  };
+
+  function calculatorHtml() {
+    var keys = [['C', 'clear'], ['⌫', 'clear', 'back'], ['÷', 'op'], ['×', 'op'], ['7'], ['8'], ['9'], ['−', 'op'], ['4'], ['5'], ['6'], ['+', 'op'],
+      ['1'], ['2'], ['3'], ['.'], ['0'], ['00'], ['=', 'eq']];
+    return '<aside class="card calc" aria-label="Calculator"><h2>Calculator</h2>' +
+      '<div class="screen"><div class="expr" id="cexpr"></div><div class="result" id="cres" aria-live="polite">0</div></div>' +
+      '<div class="keys">' + keys.map(function (k) {
+        return '<button type="button" class="' + (k[1] || '') + '" data-key="' + (k[2] || k[0]) + '"' + (k[2] ? ' aria-label="Delete last"' : '') + '>' + k[0] + '</button>';
+      }).join('') + '</div>' +
+      '<button class="btn" type="button" id="cuse">Put in box</button>' +
+      '<div class="small muted">Tap a Qty or Rate box, work out the number here, then press "Put in box".</div></aside>';
+  }
+
+  function calcEval(expr) {
+    var parts = expr.match(/(\d+\.?\d*|\.\d+|[+−×÷])/g) || [];
+    var nums = [], ops = [];
+    parts.forEach(function (p) { if (/[+−×÷]/.test(p)) ops.push(p); else nums.push(parseFloat(p)); });
+    if (!nums.length) return 0;
+    ops = ops.slice(0, nums.length - 1);
+    var n2 = [nums[0]], o2 = [];
+    for (var j = 0; j < ops.length; j++) {
+      if (ops[j] === '×') n2[n2.length - 1] *= nums[j + 1];
+      else if (ops[j] === '÷') n2[n2.length - 1] = nums[j + 1] === 0 ? NaN : n2[n2.length - 1] / nums[j + 1];
+      else { o2.push(ops[j]); n2.push(nums[j + 1]); }
+    }
+    var r = n2[0];
+    for (var k = 0; k < o2.length; k++) r = o2[k] === '+' ? r + n2[k + 1] : r - n2[k + 1];
+    return Math.round(r * 100) / 100;
+  }
+
+  function wireCalculator(onUse) {
+    var expr = '', result = 0, done = false;
+    function draw() {
+      $('#cexpr').textContent = done ? expr + ' =' : '';
+      $('#cres').textContent = done ? (isFinite(result) ? num(result) : 'Error') : (expr || '0');
+    }
+    function press(k) {
+      if (k === 'C') { expr = ''; result = 0; done = false; }
+      else if (k === 'back') { if (done) { expr = ''; done = false; } else expr = expr.slice(0, -1); }
+      else if (k === '=') { if (expr) { result = calcEval(expr); done = true; } }
+      else {
+        var isOp = /[+−×÷]/.test(k);
+        if (done) { expr = isOp && isFinite(result) ? String(result) : ''; done = false; }
+        if (isOp) { if (!expr) return draw(); expr = expr.replace(/[+−×÷]$/, ''); }
+        if (k === '.' && /\d*\.\d*$/.test(expr.split(/[+−×÷]/).pop()) && expr.split(/[+−×÷]/).pop().indexOf('.') >= 0) return draw();
+        expr += k;
+      }
+      draw();
+    }
+    $$('.keys button').forEach(function (b) {
+      b.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      b.onclick = function () { press(b.dataset.key); };
+    });
+    var use = $('#cuse');
+    use.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    use.onclick = function () {
+      var v = done ? result : (expr ? calcEval(expr) : 0);
+      if (!isFinite(v)) return;
+      onUse(String(v));
+    };
+    draw();
+  }
+
+  /* ---------- Change PIN ---------- */
+
+  routes.pin = function () {
+    view('<h1>Change PIN</h1>' + (S.user.mustChange ? '<div class="warn">You are using a PIN given by the committee. Choose your own PIN to continue.</div>' : '') +
+      '<form class="card stack" id="pform" style="max-width:440px" novalidate>' +
+      '<div class="field"><label for="p0">Current PIN</label><input type="password" id="p0" inputmode="numeric" autocomplete="current-password"></div>' +
+      '<div class="field"><label for="p1">New PIN (4 to 8 digits)</label><input type="password" id="p1" inputmode="numeric" autocomplete="new-password"></div>' +
+      '<div class="field"><label for="p2">New PIN again</label><input type="password" id="p2" inputmode="numeric" autocomplete="new-password"></div>' +
+      '<div class="actions"><button class="btn primary" type="submit">Save new PIN</button></div></form>');
+    $('#pform').onsubmit = function (e) {
+      e.preventDefault();
+      if ($('#p1').value !== $('#p2').value) return fail(new Error('The two new PINs are not the same.'));
+      var btn = $('button[type=submit]', e.target); busy(btn, true);
+      api('changePin', $('#p0').value, $('#p1').value).then(function () {
+        S.user.mustChange = false; toast('PIN changed.'); go('home');
+      }).catch(function (err) { busy(btn, false); fail(err); });
+    };
+  };
+
+  /* ---------- Staff and settings (admin) ---------- */
+
+  routes.staff = function () {
+    if (!isAdmin()) return go('home');
+    loading();
+    api('listStaff').then(function (list) {
+      var st = S.boot.settings;
+      view('<h1>Staff and settings</h1>' +
+        '<section class="card"><h2>Add a staff member</h2><form class="stack" id="sform" novalidate><div class="grid2">' +
+        '<div class="field"><label for="si">Staff ID *</label><input type="text" id="si" name="id" placeholder="For example: tenzin.d" autocapitalize="none"></div>' +
+        '<div class="field"><label for="sn">Full name *</label><input type="text" id="sn" name="name"></div>' +
+        '<div class="field"><label for="sq">Quarter number</label><input type="text" id="sq" name="quarter" class="mono"></div>' +
+        '<div class="field"><label for="sr">Role</label><select id="sr" name="role"><option value="staff">Staff</option><option value="committee">Committee member</option><option value="admin">Admin</option></select></div></div>' +
+        '<div class="actions"><button class="btn primary" type="submit">Add and make a PIN</button></div></form></section>' +
+        '<section class="card"><h2>Everyone</h2><div class="table-wrap"><table><thead><tr><th>Staff ID</th><th>Name</th><th>Quarter</th><th>Role</th><th>Active</th><th></th></tr></thead><tbody>' +
+        list.map(function (s) {
+          return '<tr data-sid="' + esc(s.id) + '"><td class="mono">' + esc(s.id) + '</td><td><input type="text" data-f="name" value="' + esc(s.name) + '" aria-label="Name"></td>' +
+            '<td><input type="text" data-f="quarter" class="mono" value="' + esc(s.quarter) + '" aria-label="Quarter" style="width:90px"></td>' +
+            '<td><select data-f="role" aria-label="Role">' + [['staff', 'Staff'], ['committee', 'Committee'], ['admin', 'Admin']].map(function (r) {
+              return '<option value="' + r[0] + '"' + (s.role === r[0] ? ' selected' : '') + '>' + r[1] + '</option>';
+            }).join('') + '</select></td>' +
+            '<td><select data-f="active" aria-label="Active"><option value="yes"' + (s.active === 'yes' ? ' selected' : '') + '>Yes</option><option value="no"' + (s.active !== 'yes' ? ' selected' : '') + '>No</option></select></td>' +
+            '<td style="white-space:nowrap"><button class="btn sm" type="button" data-save>Save</button> <button class="btn sm ghost" type="button" data-reset>New PIN</button></td></tr>';
+        }).join('') + '</tbody></table></div></section>' +
+        '<section class="card"><h2>Settings</h2><form class="stack" id="setform" novalidate>' +
+        '<div class="field" style="max-width:300px"><label for="ln">Long stay: warn after how many nights</label><input type="number" id="ln" name="longStayNights" min="1" value="' + esc(st.longStayNights) + '"></div>' +
+        '<div class="field"><label for="cats">Expense categories (one per line)</label><textarea id="cats" rows="6">' + esc(st.expenseCategories.join('\n')) + '</textarea></div>' +
+        '<div class="actions"><button class="btn primary" type="submit">Save settings</button></div></form></section>');
+
+      function pinDialog(name, id, pin) {
+        openDialog('<h2>PIN for ' + esc(name) + '</h2><p style="margin:0">Give these to ' + esc(name) + '. They will be asked to choose their own PIN when they first sign in.</p>' +
+          '<dl class="facts"><dt>Staff ID</dt><dd class="mono">' + esc(id) + '</dd><dt>PIN</dt><dd class="mono" style="font-size:24px">' + esc(pin) + '</dd></dl>' +
+          '<div class="small muted">This PIN is shown only once.</div><div class="actions"><button class="btn primary" type="button" data-close>Done</button></div>', function (root) {
+          $('[data-close]', root).onclick = function () { closeDialog(); route(); };
+        });
+      }
+      $('#sform').onsubmit = function (e) {
+        e.preventDefault();
+        var data = formData(e.target);
+        api('saveStaff', data).then(function (r) { refreshBoot(); pinDialog(r.user.name, r.user.id, r.pin); }).catch(fail);
+      };
+      $$('[data-sid]').forEach(function (tr) {
+        var id = tr.dataset.sid;
+        $('[data-save]', tr).onclick = function () {
+          var data = { id: id, editing: true };
+          $$('[data-f]', tr).forEach(function (el) { data[el.dataset.f] = el.value; });
+          api('saveStaff', data).then(function () { toast('Saved.'); refreshBoot(); }).catch(fail);
+        };
+        $('[data-reset]', tr).onclick = function () {
+          if (!confirm('Make a new PIN for ' + id + '? Their old PIN will stop working.')) return;
+          api('resetPin', id).then(function (r) { pinDialog($('[data-f=name]', tr).value, id, r.pin); }).catch(fail);
+        };
+      });
+      $('#setform').onsubmit = function (e) {
+        e.preventDefault();
+        api('saveSettings', { longStayNights: $('#ln').value, expenseCategories: $('#cats').value.split('\n') }).then(function (s) {
+          S.boot.settings = s; toast('Settings saved.');
+        }).catch(fail);
+      };
+    }).catch(fail);
+  };
+  function refreshBoot() { call('bootstrap', S.token).then(function (b) { S.boot = b; }).catch(function () {}); }
+
+  /* ---------- Go ---------- */
+
+  if (S.token) start(); else showLogin();
+})();
+</script>

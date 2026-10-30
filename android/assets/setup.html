@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SWC Selakui</title>
+<style>
+  :root { --maroon:#8b2332; --maroon-strong:#6e1a27; --saffron:#e0a526; --ink:#231b15; --muted:#6b5e51; --line:#ddd3c3; --bg:#f7f3ec; --danger:#b3261e; --danger-bg:#fbe4e2; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Noto Sans", system-ui, sans-serif; color:var(--ink); background:var(--bg); font-size:16px; line-height:1.5; }
+  header { background:var(--maroon); color:#fff; padding:16px; display:flex; gap:12px; align-items:center; }
+  .seal { width:44px; height:44px; border-radius:50%; background:var(--saffron); color:var(--maroon-strong); font-weight:700; font-size:13px; display:flex; align-items:center; justify-content:center; flex:none; }
+  header .t { font-weight:700; font-size:18px; }
+  header .s { font-size:13px; opacity:.85; }
+  main { max-width:520px; margin:0 auto; padding:20px 16px 40px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:20px; }
+  h1 { font-size:20px; margin:0 0 8px; }
+  p { margin:0 0 12px; }
+  .muted { color:var(--muted); font-size:14px; }
+  label { display:block; font-weight:600; margin:16px 0 6px; }
+  textarea { width:100%; min-height:96px; padding:10px 12px; font:inherit; font-size:15px; border:1px solid #8c7d68; border-radius:8px; resize:vertical; word-break:break-all; }
+  textarea:focus { outline:3px solid rgba(139,35,50,.25); border-color:var(--maroon); }
+  .btn { display:block; width:100%; margin-top:14px; min-height:48px; border-radius:8px; border:1px solid var(--maroon); background:#fff; color:var(--maroon); font:inherit; font-weight:600; }
+  .btn.primary { background:var(--maroon); color:#fff; }
+  .err { display:none; margin-top:12px; padding:10px 12px; border-radius:8px; background:var(--danger-bg); color:var(--danger); font-size:14px; }
+  ol { padding-left:20px; margin:8px 0 0; }
+  li { margin-bottom:6px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="seal" aria-hidden="true">SWC</div>
+  <div><div class="t">Staff Welfare Committee</div><div class="s">TCV School Selakui</div></div>
+</header>
+<main>
+  <section class="card hidden" id="offline">
+    <h1>Can't reach the app</h1>
+    <p>Check that this tablet or phone is on Wi-Fi or mobile data, then try again.</p>
+    <button class="btn primary" type="button" id="retry">Try again</button>
+    <button class="btn" type="button" id="toChange">Change the committee link</button>
+  </section>
+
+  <section class="card hidden" id="setup">
+    <h1 id="setupTitle">Connect to your committee</h1>
+    <p id="setupIntro">This app opens your Staff Welfare Committee's records. Paste the app link the committee shared with you (on WhatsApp or by message).</p>
+    <label for="link">Committee app link</label>
+    <textarea id="link" placeholder="https://script.google.com/macros/s/…/exec" autocapitalize="none" autocorrect="off" spellcheck="false"></textarea>
+    <div class="err" id="err" role="alert"></div>
+    <button class="btn primary" type="button" id="save">Open the app</button>
+    <button class="btn hidden" type="button" id="cancel">Keep the current link</button>
+    <p class="muted" style="margin-top:18px">How to paste: in WhatsApp, press and hold the link, choose <b>Copy</b>. Then press and hold in the box above and choose <b>Paste</b>.</p>
+    <p class="muted">You only do this once. To change it later, press the Back button on the app's first screen and choose <b>Change link</b>.</p>
+  </section>
+</main>
+<script>
+(function () {
+  var bridge = window.SWCApp;
+  var mode = (location.hash || '#first').slice(1);
+  var current = bridge ? bridge.getLink() : '';
+  function $(id) { return document.getElementById(id); }
+
+  function showSetup() {
+    $('offline').classList.add('hidden');
+    $('setup').classList.remove('hidden');
+    if (current) {
+      $('setupTitle').textContent = 'Change the committee link';
+      $('setupIntro').textContent = 'Paste the new link if the committee has set up a new copy of the app. Your old link is shown below.';
+      $('link').value = current;
+      $('cancel').classList.remove('hidden');
+    }
+  }
+
+  function check(url) {
+    if (!url) return 'Paste the link first.';
+    var m = url.match(/https:\/\/script\.google\.com\/\S+/);
+    if (!m) return 'This doesn\'t look like the committee app link. It should start with https://script.google.com/';
+    url = m[0];
+    if (url.indexOf('/macros/') < 0) return 'This is a Google link, but not the app link. Ask the committee for the link that ends in /exec.';
+    return { url: url };
+  }
+
+  $('save').onclick = function () {
+    var r = check($('link').value.trim());
+    if (typeof r === 'string') { $('err').textContent = r; $('err').style.display = 'block'; return; }
+    $('err').style.display = 'none';
+    $('save').textContent = 'Opening…';
+    bridge.saveLink(r.url);
+  };
+  $('cancel').onclick = function () { bridge.retry(); };
+  $('retry').onclick = function () { $('retry').textContent = 'Trying…'; bridge.retry(); };
+  $('toChange').onclick = showSetup;
+
+  if (mode === 'offline' && current) $('offline').classList.remove('hidden');
+  else showSetup();
+})();
+</script>
+</body>
+</html>
