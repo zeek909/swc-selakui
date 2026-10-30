@@ -4,7 +4,7 @@ App for the Staff Welfare Committee, TCV School Selakui: visitor reports for the
 
 ## Download the offline Windows app
 
-Go to **[Releases](../../releases/latest)** and download **SWC-Selakui-Offline-Setup.exe** (Windows 10 or 11). It works without internet or a Google account; all records stay on that PC. See Part E of [GUIDE.md](GUIDE.md).
+Download **[SWC-Selakui-Offline-Setup.exe](https://github.com/zeek909/swc-selakui/raw/main/download/SWC-Selakui-Offline-Setup.exe)** (Windows 10 or 11). It works without internet or a Google account; all records stay on that PC. See Part E of [GUIDE.md](GUIDE.md).
 
 ## What's here
 

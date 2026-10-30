@@ -3,6 +3,7 @@
 Unicode true
 Target amd64-unicode
 SetCompressor /SOLID lzma
+SetCompressorDictSize 64
 RequestExecutionLevel user
 
 !define APPNAME "SWC Selakui"

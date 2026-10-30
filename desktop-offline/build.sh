@@ -21,7 +21,7 @@ if [ -n "$ELECTRON_ZIP" ]; then cp "$ELECTRON_ZIP" "$B/electron.zip"; else
   curl -fSL -o "$B/electron.zip" "https://github.com/electron/electron/releases/download/v$ELECTRON/electron-v$ELECTRON-win32-x64.zip"
 fi
 unzip -q "$B/electron.zip" -d "$B/payload"
-rm "$B/payload/resources/default_app.asar"
+rm "$B/payload/resources/default_app.asar" "$B/payload/dxcompiler.dll"   # dxcompiler is only for WebGPU; dropping it keeps the installer under 100 MB
 find "$B/payload/locales" -type f ! -name 'en-US.pak' -delete
 mv "$B/payload/electron.exe" "$B/payload/SWC Selakui.exe"
 node build-ui.js "$WEB" "$B/payload/resources/app"
