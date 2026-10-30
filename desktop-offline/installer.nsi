@@ -25,7 +25,7 @@ VIAddVersionKey "FileDescription" "${APPNAME} setup"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "CompanyName" "Staff Welfare Committee, TCV School Selakui"
-VIAddVersionKey "LegalCopyright" ""
+VIAddVersionKey "LegalCopyright" "Developed by Tenzing Tsewang, TCV Selakui Librarian"
 
 !include "MUI2.nsh"
 !define MUI_ICON "swc.ico"

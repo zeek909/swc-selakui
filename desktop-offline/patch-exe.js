@@ -25,7 +25,7 @@ vi.setStringValues({ lang: 1033, codepage: 1200 }, {
   CompanyName: 'Staff Welfare Committee, TCV School Selakui',
   InternalName: 'SWC Selakui',
   OriginalFilename: 'SWC Selakui.exe',
-  LegalCopyright: ''
+  LegalCopyright: 'Developed by Tenzing Tsewang, TCV Selakui Librarian'
 });
 vi.outputToResourceEntries(res.entries);
 res.outputResource(exe);

@@ -1,5 +1,7 @@
 # SWC Selakui app: setup and handover guide
 
+*Developed by Tenzing Tsewang, TCV Selakui Librarian.*
+
 This guide is for the Staff Welfare Committee member who sets up the SWC app, and for each new committee that takes it over. You don't need any technical knowledge. Follow the steps in order.
 
 **What the app does:** staff report visitors staying in the staff quarters, report quarrels or disputes (with or without their name), and the committee keeps track of party and meal donations and expenses with bill photos.

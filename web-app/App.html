@@ -152,7 +152,8 @@
   function shell() {
     $('#app').innerHTML = '<div class="layout"><nav class="side" aria-label="Main" id="nav"></nav><main id="view"></main></div>';
     $('#nav').innerHTML = navItems().map(function (n) { return '<a href="#' + n[0] + '" data-route="' + n[0] + '">' + esc(n[1]) + '</a>'; }).join('') +
-      '<div class="nav-foot" style="flex:1"></div><div class="nav-foot small muted" style="padding:10px 12px">' + (isCommittee() ? 'Committee view' : 'Staff view') + '</div>';
+      '<div class="nav-foot" style="flex:1"></div><div class="nav-foot small muted" style="padding:10px 12px">' + (isCommittee() ? 'Committee view' : 'Staff view') +
+      '<div class="credit-side">' + esc(CREDIT) + '</div></div>';
     $('#who').classList.remove('hidden');
     $('#whoName').textContent = S.user.name;
     $('#whoDate').textContent = d(today());
@@ -176,6 +177,7 @@
   $('#logoutBtn').onclick = function () { if (S.token) call('logout', S.token); signedOut(); };
 
   /* Committee name, school name and logo, set by the admin in Settings. */
+  var CREDIT = 'Developed by Tenzing Tsewang, TCV Selakui Librarian';
   var BRAND = { committeeName: 'Staff Welfare Committee', schoolName: 'TCV School Selakui', logo: '' };
   function sealHtml(cls) {
     return BRAND.logo ? '<img class="' + cls + ' logo" alt="" src="' + esc(BRAND.logo) + '">' : '<div class="' + cls + '" aria-hidden="true">SWC</div>';
@@ -202,7 +204,8 @@
         var label = k === 'clear' ? 'Clear' : k === 'back' ? '⌫' : k;
         return '<button type="button" data-k="' + k + '"' + (k === 'back' ? ' aria-label="Delete last digit"' : '') + (k === 'clear' ? ' class="fn"' : k === 'back' ? ' class="fn"' : '') + '>' + label + '</button>';
       }).join('') + '</div>' +
-      '<button class="btn primary login-go" type="submit">Sign in</button></form></div>';
+      '<button class="btn primary login-go" type="submit">Sign in</button>' +
+      '<div class="credit">' + esc(CREDIT) + '</div></form></div>';
     $('#lid').focus();
     $$('.pinpad button').forEach(function (b) {
       b.addEventListener('mousedown', function (e) { e.preventDefault(); });

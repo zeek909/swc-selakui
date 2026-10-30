@@ -1,10 +1,12 @@
 # SWC Selakui
 
-App for the Staff Welfare Committee, TCV School Selakui: visitor reports for the staff quarters, disputes (with an anonymous option), and party and meal donations and expenses with bill photos.
+App for the Staff Welfare Committee, TCV School Selakui. Developed by Tenzing Tsewang, TCV Selakui Librarian.
+
+It handles visitor reports for the staff quarters, disputes (with an anonymous option), and party and meal donations and expenses with bill photos.
 
 ## Download the offline Windows app
 
-Download **[SWC-Selakui-Offline-Setup.exe](https://github.com/zeek909/swc-selakui/raw/main/download/SWC-Selakui-Offline-Setup.exe)** (Windows 10 or 11) for a new PC. A PC that already has the app can use the small **[SWC-Update-1.1.0.zip](https://github.com/zeek909/swc-selakui/raw/main/download/SWC-Update-1.1.0.zip)** instead: Help > Install update. It works without internet or a Google account; all records stay on that PC. See Part E of [GUIDE.md](GUIDE.md).
+Download **[SWC-Selakui-Offline-Setup.exe](https://github.com/zeek909/swc-selakui/raw/main/download/SWC-Selakui-Offline-Setup.exe)** (Windows 10 or 11) for a new PC. A PC that already has the app can use the small **[SWC-Update-1.1.1.zip](https://github.com/zeek909/swc-selakui/raw/main/download/SWC-Update-1.1.1.zip)** instead: Help > Install update. It works without internet or a Google account; all records stay on that PC. See Part E of [GUIDE.md](GUIDE.md).
 
 ## What's here
 

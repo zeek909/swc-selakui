@@ -434,7 +434,7 @@ function buildMenu() {
         { label: 'Install update…', click: installUpdate },
         { label: 'Reset admin PIN…', click: resetAdmin },
         { type: 'separator' },
-        { label: 'About', click: () => dialog.showMessageBox(win, { type: 'info', message: 'SWC Selakui, offline desktop app', detail: 'Version ' + app.getVersion() + '\nStaff Welfare Committee, TCV School Selakui' }) }
+        { label: 'About', click: () => dialog.showMessageBox(win, { type: 'info', message: 'SWC Selakui, offline desktop app', detail: 'Version ' + app.getVersion() + '\nStaff Welfare Committee, TCV School Selakui\n\nDeveloped by Tenzing Tsewang, TCV Selakui Librarian' }) }
       ]
     }
   ];

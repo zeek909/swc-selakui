@@ -1,8 +1,9 @@
 {
   "name": "swc-selakui",
   "productName": "SWC Selakui",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Staff Welfare Committee, TCV School Selakui (offline desktop app)",
   "main": "main.js",
+  "author": "Tenzing Tsewang, TCV Selakui Librarian",
   "private": true
 }
